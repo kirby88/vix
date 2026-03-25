@@ -101,6 +101,7 @@ type Model struct {
 	input          textarea.Model
 	spinner        spinner.Model
 	commandPalette CommandPalette
+	fileCompleter  FileCompleter
 
 	// Focus
 	focus FocusState
@@ -363,6 +364,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	processKey:
+
+		// File completer intercepts navigation and selection keys when visible
+		if m.fileCompleter.IsVisible() {
+			switch msg.String() {
+			case "up":
+				m.fileCompleter.MoveUp()
+				return m, nil
+			case "down":
+				m.fileCompleter.MoveDown()
+				return m, nil
+			case "esc":
+				m.fileCompleter.Close()
+				return m, nil
+			case "enter", "tab":
+				entry := m.fileCompleter.SelectedEntry()
+				if entry == nil {
+					m.fileCompleter.Close()
+					return m, nil
+				}
+				if entry.IsDir() {
+					m.fileCompleter.Descend(entry)
+					// Keep the @ prefix so extractAtQuery still finds an active token
+					// on the next keypress and the completer stays open.
+					newPath := "@" + m.fileCompleter.currentDir + "/"
+					m.input.SetValue(replaceAtToken(m.input.Value(), newPath))
+					m.input.MoveToEnd()
+				} else {
+					path := m.fileCompleter.SelectedPath()
+					m.input.SetValue(replaceAtToken(m.input.Value(), path))
+					m.input.MoveToEnd()
+					m.fileCompleter.Close()
+				}
+				newHeight := m.visualLineCount()
+				if newHeight != m.input.Height() {
+					m.input.SetHeight(newHeight)
+				}
+				return m, nil
+			}
+			// Any other key falls through to textarea update below
+		}
 
 		// Tab always handles focus switching, before any panel intercepts
 		if msg.String() == "tab" {
@@ -637,6 +678,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == StateWaitingForInput || m.state == StatePlanReview {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
+
+			// Detect @ file-path query and drive the file completer popup
+			query, found := extractAtQuery(m.input.Value())
+			if found {
+				dir, prefix := resolveAtDir(query, m.cwd)
+				if m.fileCompleter.IsVisible() && dir == m.fileCompleter.currentDir {
+					m.fileCompleter.Refresh(prefix)
+				} else {
+					m.fileCompleter.Open(dir, prefix)
+				}
+			} else {
+				m.fileCompleter.Close()
+			}
+
 			newHeight := m.visualLineCount()
 			if newHeight != m.input.Height() {
 				m.input.SetHeight(newHeight)
@@ -1192,6 +1247,25 @@ func (m Model) View() tea.View {
 		w, h := lipgloss.Size(overlay)
 		center := centerRect(canvas.Bounds(), w, h)
 		uv.NewStyledString(overlay).Draw(canvas, center)
+	}
+
+	// 6b. File completer overlay — drawn above the input box
+	if m.fileCompleter.IsVisible() {
+		popupWidth := 40
+		if popupWidth > m.width-4 {
+			popupWidth = m.width - 4
+		}
+		overlay := m.fileCompleter.View(popupWidth, 8, m.styles)
+		if overlay != "" {
+			_, h := lipgloss.Size(overlay)
+			// Position just above the input box, left-aligned with a small indent
+			inputTop := m.height - layout.StatusBarHeight - layout.InputHeight
+			popupY := inputTop - h
+			if popupY < 0 {
+				popupY = 0
+			}
+			uv.NewStyledString(overlay).Draw(canvas, image.Rect(2, popupY, 2+popupWidth, popupY+h))
+		}
 	}
 
 	// 7. Render canvas to string (like crush)

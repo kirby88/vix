@@ -207,6 +207,9 @@ type Styles struct {
 	CommandPaletteStyle         lipgloss.Style
 	CommandPaletteSelectedStyle lipgloss.Style
 	CommandPaletteSepStyle      lipgloss.Style
+
+	// File completer popup
+	FileCompleterStyle lipgloss.Style
 }
 
 // NewStyles creates a Styles set appropriate for the terminal background.
@@ -262,6 +265,11 @@ func NewStyles(hasDarkBG bool) Styles {
 			Foreground(colorSecondary),
 		CommandPaletteSepStyle: lipgloss.NewStyle().
 			Foreground(dimGray),
+
+		FileCompleterStyle: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorPrimary).
+			Padding(0, 1),
 	}
 }
 
