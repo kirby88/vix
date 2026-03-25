@@ -13,9 +13,12 @@
 
 ### Workflows
 
-Most coding agents have immutable workflows. For example claude code plan mode follow this pattern: exploration, planning, execution, validation.
+Most coding agents have immutable workflows. For example claude code plan mode workflow follow this pattern: 
+1. Explore
+2. Plan
+3. Execute
 
-Vix takes a different approach: it lets you define **workflows**, sequences of discrete steps the agent follows. You control what context is shared between steps and what gets discarded. 
+Vix takes a different approach: it lets you define your own **workflows** which are sequences of discrete steps that the agent follows. You control what context is shared between steps and what gets discarded. 
 
 For example `vix` native plan mode enables plan and  . This frees up "mental space" for the LLM to focus on one thing at a time, which has been proven to be significantly more effective. 
 
