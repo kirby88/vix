@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "agent": "general",
+  "theme": {
+    "primary": "#BC63FC",
+    "secondary": "#A3FC63"
+  },
+  "features": {
+    "tool_orchestrator": false,
+    "read_claude_md": true,
+    "read_agents_md": true
+  },
+  "lsp": {
+  },
+  "workflows": [
+    {
+      "name": "Plan",
+      "summary": "$(step.execute.display)",
+      "entry_point": {
+        "id": "explore",
+        "params": {
+          "prompt": "$(workflow.prompt)"
+        }
+      },
+      "steps": {
+        "explore": {
+          "type": "agent",
+          "agent": "general",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/explore.md)",
+          "next_steps": [
+            {
+              "id": "plan",
+              "params": {
+                "prompt": "$(step.explore.prompt)"
+              }
+            }
+          ],
+          "stream": true,
+          "explanation": "Exploring the codebase to understand relevant files and patterns"
+        },
+        "plan": {
+          "type": "agent",
+          "fork_from": "explore",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/plan.md)",
+          "next_steps": [
+            {
+              "id": "review"
+            }
+          ],
+          "stream": true,
+          "json_output": false,
+          "explanation": "Generating a draft implementation plan"
+        },
+        "review": {
+          "type": "tool",
+          "tool": "ask_question_to_user",
+          "question": "Review the plan above. What would you like to do?",
+          "options": [
+            {
+              "title": "Accept",
+              "description": "Approve the plan and proceed to execution",
+              "steps": [
+                {
+                  "id": "execute"
+                }
+              ]
+            },
+            {
+              "title": "Modify",
+              "description": "Provide feedback to refine the plan",
+              "steps": [
+                {
+                  "id": "refine",
+                  "params": {
+                    "feedback": "The user reviewed the plan and gave you the following feedback you need to address: $(user_text)"
+                  }
+                }
+              ],
+              "has_user_input": true
+            },
+            {
+              "title": "Reject",
+              "description": "Reject the plan and stop the workflow",
+              "steps": [
+                {
+                  "id": "stop"
+                }
+              ]
+            }
+          ],
+          "category": "Plan Review",
+          "explanation": "Reviewing the plan"
+        },
+        "refine": {
+          "type": "agent",
+          "fork_from": "plan",
+          "input_params": {
+            "feedback": {
+              "description": "User feedback to refine the plan"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/refine.md)",
+          "next_steps": [
+            {
+              "id": "review"
+            }
+          ],
+          "stream": false,
+          "json_output": true,
+          "display_key": "display",
+          "explanation": "Refining the plan based on critique feedback"
+        },
+        "execute": {
+          "type": "agent",
+          "fork_from": "plan",
+          "prompt": "$(file:prompts/plan_workflow/execute.md)",
+          "explanation": "Executing the approved plan"
+        }
+      }
+    },
+    {
+      "name": "Plan & Critic (more resources intensive)",
+      "summary": "$(step.execute.display)",
+      "entry_point": {
+        "id": "explore",
+        "params": {
+          "prompt": "$(workflow.prompt)"
+        }
+      },
+      "steps": {
+        "explore": {
+          "type": "agent",
+          "agent": "general",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/explore.md)",
+          "next_steps": [
+            {
+              "id": "plan",
+              "params": {
+                "prompt": "$(step.explore.prompt)"
+              }
+            }
+          ],
+          "stream": true,
+          "explanation": "Exploring the codebase to understand relevant files and patterns"
+        },
+        "plan": {
+          "type": "agent",
+          "fork_from": "explore",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/plan.md)",
+          "next_steps": [
+            {
+              "id": "critic",
+              "params": {
+                "prompt": "$(step.plan.prompt)"
+              }
+            }
+          ],
+          "stream": false,
+          "json_output": true,
+          "display_key": "display",
+          "explanation": "Generating a draft implementation plan"
+        },
+        "critic": {
+          "type": "agent",
+          "fork_from": "explore",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/critic.md)",
+          "next_steps": [
+            {
+              "id": "refine"
+            }
+          ],
+          "stream": false,
+          "json_output": true,
+          "display_key": "display",
+          "explanation": "Reviewing the plan for flaws, gaps, and risks"
+        },
+        "refine": {
+          "type": "agent",
+          "fork_from": "plan",
+          "input_params": {
+            "feedback": {
+              "description": "User feedback to refine the plan"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/refine.md)",
+          "next_steps": [
+            {
+              "id": "review"
+            }
+          ],
+          "stream": false,
+          "json_output": true,
+          "display_key": "display",
+          "explanation": "Refining the plan based on critique feedback"
+        },
+        "review": {
+          "type": "tool",
+          "tool": "ask_question_to_user",
+          "question": "Review the plan above. What would you like to do?",
+          "options": [
+            {
+              "title": "Accept",
+              "description": "Approve the plan and proceed to execution",
+              "steps": [
+                {
+                  "id": "execute"
+                }
+              ]
+            },
+            {
+              "title": "Reject",
+              "description": "Reject the plan and stop the workflow",
+              "steps": [
+                {
+                  "id": "stop"
+                }
+              ]
+            },
+            {
+              "title": "Modify",
+              "description": "Provide feedback to refine the plan",
+              "steps": [
+                {
+                  "id": "refine",
+                  "params": {
+                    "feedback": "The user reviewed the plan and gave you the following feedback you need to address: $(user_text)"
+                  }
+                }
+              ],
+              "has_user_input": true
+            }
+          ],
+          "category": "Plan Review",
+          "explanation": "Reviewing the plan"
+        },
+        "execute": {
+          "type": "agent",
+          "fork_from": "refine",
+          "prompt": "$(file:prompts/plan_workflow/execute.md)",
+          "explanation": "Executing the approved plan"
+        }
+      }
+    }
+  ]
+}
