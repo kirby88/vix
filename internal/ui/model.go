@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -88,6 +87,7 @@ const (
 	StatePlanReview
 	StatePlanExecuting
 	StateUserQuestion
+	StateQuitConfirm
 )
 
 // Model is the root Bubble Tea model.
@@ -99,7 +99,6 @@ type Model struct {
 
 	// Components
 	input          textarea.Model
-	spinner        spinner.Model
 	commandPalette CommandPalette
 	fileCompleter  FileCompleter
 
@@ -134,6 +133,10 @@ type Model struct {
 
 	// Confirm state
 	confirmToolName string
+
+	// Quit confirm state
+	quitPrevState    AppState
+	quitSelected     int // 0 = Yes, 1 = No
 
 	// User question state
 	questionPanel QuestionPanel
@@ -179,14 +182,9 @@ type Model struct {
 
 // NewModel creates a new root Model.
 func NewModel(cfg *config.Config, session *daemon.SessionClient, testMode bool) Model {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(colorPrimary)
-
 	m := Model{
 		state:          StateWaitingForInput,
 		input:          newInput(),
-		spinner:        s,
 		thinkingAnim:   NewThinkingAnim(),
 		commandPalette: NewCommandPalette(),
 		focus:          FocusEditor,
@@ -197,7 +195,7 @@ func NewModel(cfg *config.Config, session *daemon.SessionClient, testMode bool) 
 		hasDarkBG:      true,
 		styles:         NewStyles(true),
 		history:        NewHistory(),
-		mdRenderer:     NewMarkdownRenderer(80, true),
+		mdRenderer:     NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
 		cfg:            cfg,
 		socketPath:     cfg.SocketPath,
 		cwd:            cfg.CWD,
@@ -215,10 +213,9 @@ func NewModel(cfg *config.Config, session *daemon.SessionClient, testMode bool) 
 func (m Model) Init() tea.Cmd {
 	m.input.Reset()
 	if m.testMode {
-		return m.spinner.Tick
+		return nil
 	}
 	return tea.Batch(
-		m.spinner.Tick,
 		func() tea.Msg { return startCursorBlinkMsg{} },
 		m.startEventLoop(),
 		waitForResume,
@@ -260,19 +257,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.input.SetWidth(m.width - 4)
 		m.questionPanel.SetWidth(m.width)
-		m.mdRenderer.UpdateWidth(m.width - 4)
+		// The markdown renderer width must match the chat viewport's inner content
+		// width: ChatWidth minus 2 for the rounded border and 2 for the horizontal
+		// padding (Padding(0,1) = 1 char each side) defined in ViewportFocusedStyle /
+		// ViewportBlurredStyle.
+		chatWidth := m.computeLayoutWithSidebar(m.visualLineCount()).ChatWidth
+		m.mdRenderer.UpdateWidth(chatWidth - 4)
 
 
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// Ctrl+C/D always quits, regardless of focus or panel state
+		// Ctrl+C/D: ask for confirmation, or force-quit if already confirming
 		if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
-			if m.session != nil {
-				m.session.SendCancel()
-				m.session.SendClose()
+			if m.state == StateQuitConfirm {
+				// Second Ctrl+C/D while dialog is showing — force quit immediately
+				if m.session != nil {
+					m.session.SendCancel()
+					m.session.SendClose()
+				}
+				return m, tea.Quit
 			}
-			return m, tea.Quit
+			m.quitPrevState = m.state
+			m.state = StateQuitConfirm
+			m.quitSelected = 0
+			return m, nil
 		}
 
 		// History panel intercepts all keys when visible
@@ -405,8 +414,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Any other key falls through to textarea update below
 		}
 
+		// Left/right arrow keys change selection in the quit dialog.
+		if m.state == StateQuitConfirm && (msg.String() == "left" || msg.String() == "right") {
+			if m.quitSelected == 0 {
+				m.quitSelected = 1
+			} else {
+				m.quitSelected = 0
+			}
+			return m, nil
+		}
+
 		// Tab always handles focus switching, before any panel intercepts
 		if msg.String() == "tab" {
+			if m.state == StateQuitConfirm {
+				// Toggle between Yes (0) and No (1)
+				if m.quitSelected == 0 {
+					m.quitSelected = 1
+				} else {
+					m.quitSelected = 0
+				}
+				return m, nil
+			}
 			if m.state == StateWaitingForInput || m.state == StatePlanReview || m.state == StateUserQuestion ||
 				m.state == StateStreaming || m.state == StateToolExecuting {
 				switch m.focus {
@@ -508,14 +536,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "ctrl+c", "ctrl+d":
-			if m.session != nil {
-				m.session.SendCancel()
-				m.session.SendClose()
-			}
-			return m, tea.Quit
-
 		case "enter":
+			if m.state == StateQuitConfirm {
+				if m.quitSelected == 0 {
+					// Yes selected — quit
+					if m.session != nil {
+						m.session.SendCancel()
+						m.session.SendClose()
+					}
+					return m, tea.Quit
+				}
+				// No selected — cancel
+				m.state = m.quitPrevState
+				return m, nil
+			}
 			if m.state == StateConfirmPending {
 				if m.session != nil {
 					m.session.SendConfirm(true)
@@ -584,6 +618,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "y", "Y":
+			if m.state == StateQuitConfirm {
+				if m.session != nil {
+					m.session.SendCancel()
+					m.session.SendClose()
+				}
+				return m, tea.Quit
+			}
 			if m.state == StateConfirmPending {
 				if m.session != nil {
 					m.session.SendConfirm(true)
@@ -601,6 +642,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "esc":
+			if m.state == StateQuitConfirm {
+				m.state = m.quitPrevState
+				return m, nil
+			}
 			if m.state == StateStreaming || m.state == StateToolExecuting || m.state == StatePlanExecuting {
 				m.thinkingAnim.Stop()
 				if m.session != nil {
@@ -633,6 +678,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "n", "N":
+			if m.state == StateQuitConfirm {
+				m.state = m.quitPrevState
+				return m, nil
+			}
 			if m.state == StateConfirmPending {
 				if m.session != nil {
 					m.session.SendConfirm(false)
@@ -649,9 +698,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		
 				return m, nil
 			}
+
 		}
 
 		if m.state == StateConfirmPending {
+			return m, nil
+		}
+
+		if m.state == StateQuitConfirm {
 			return m, nil
 		}
 
@@ -760,7 +814,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		m.hasDarkBG = msg.IsDark()
 		m.styles = NewStyles(m.hasDarkBG)
-		m.mdRenderer = NewMarkdownRenderer(m.mdRenderer.width, m.hasDarkBG)
+		m.mdRenderer = NewMarkdownRenderer(m.mdRenderer.width, m.hasDarkBG, m.styles.CodeBoxBorderStyle)
 		return m, nil
 
 	case resumeFromSleepMsg:
@@ -773,12 +827,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case startCursorBlinkMsg:
 		blinkCmd := m.input.Focus()
 		return m, blinkCmd
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
-		return m, tea.Batch(cmds...)
 
 	case animStepMsg:
 		cmd := m.thinkingAnim.Advance()
@@ -831,7 +879,6 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		}
 
 	case "event.stream_chunk":
-		m.thinkingAnim.Stop()
 		data := marshalData(event.Data)
 		var chunk protocol.EventStreamChunk
 		json.Unmarshal(data, &chunk)
@@ -856,7 +903,6 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		}
 
 	case "event.tool_call":
-		m.thinkingAnim.Stop()
 		// Flush streaming buffer before adding tool call to preserve message ordering
 		if m.assistantBuf != "" {
 			m.chatMessages = append(m.chatMessages, renderAssistantMessage(m.assistantBuf, m.mdRenderer))
@@ -882,7 +928,7 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		var tr protocol.EventToolResult
 		json.Unmarshal(data, &tr)
 		hasPending := len(m.pendingTools) > 1
-		result := renderToolResultWithContext(tr.Name, tr.Output, tr.IsError, hasPending, tr.Detail, m.styles)
+		result := renderToolResultWithContext(tr.Name, tr.Output, tr.IsError, hasPending, tr.Detail, m.styles, m.mdRenderer, m.mdRenderer.width)
 
 		if tr.ToolID != "" && m.pendingTools != nil {
 			if callIdx, ok := m.pendingTools[tr.ToolID]; ok {
@@ -917,6 +963,9 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		json.Unmarshal(data, &uq)
 		m.questionPanel.Open(uq, m.width)
 		m.state = StateUserQuestion
+		m.thinkingAnim.Stop()
+		m.focus = FocusEditor
+		m.input.Blur()
 
 	case "event.plan_proposed":
 		data := marshalData(event.Data)
@@ -1089,7 +1138,7 @@ func (m *Model) computeLayoutWithSidebar(inputLineCount int, panelHeights ...int
 func (m *Model) maxScrollOffset() int {
 	layout := m.computeLayoutWithSidebar(m.visualLineCount())
 	contentHeight := layout.ChatHeight - 2
-	chatContent := buildRenderedChat(m.chatMessages, m.styles)
+	chatContent := buildRenderedChat(m.chatMessages, m.styles, m.mdRenderer.width)
 	if m.assistantRendered != "" {
 		chatContent += m.assistantRendered
 	}
@@ -1143,7 +1192,7 @@ func (m Model) View() tea.View {
 	y := 0
 
 	// 1. Chat area — build content fresh from model fields every frame
-	chatContent := buildRenderedChat(m.chatMessages, m.styles)
+	chatContent := buildRenderedChat(m.chatMessages, m.styles, m.mdRenderer.width)
 	if m.assistantRendered != "" {
 		chatContent += m.assistantRendered
 	} else if animFrame := m.thinkingAnim.View(); animFrame != "" {
@@ -1218,6 +1267,9 @@ func (m Model) View() tea.View {
 	var inputSection string
 	if m.state == StateUserQuestion && m.questionPanel.IsVisible() {
 		inputSection = m.questionPanel.Render(m.styles, m.focus == FocusEditor)
+	} else if m.state == StateQuitConfirm {
+		// Render the underlying input box dimmed; the quit dialog is an overlay drawn later.
+		inputSection = renderInputBox(m.currentModeName(), m.activeWorkflow != "", m.input.View(), m.width, false, m.styles.ColorBlurBorder)
 	} else if m.state == StateConfirmPending {
 		inputArea := renderConfirmPrompt(m.confirmToolName, m.width)
 		inputSection = renderInputBox(m.currentModeName(), m.activeWorkflow != "", inputArea, m.width, m.focus == FocusEditor, m.styles.ColorBlurBorder)
@@ -1229,13 +1281,10 @@ func (m Model) View() tea.View {
 	y += inputHeight
 
 	// 5. Status bar
-	spinning := m.state == StateStreaming || m.state == StateToolExecuting || m.state == StatePlanExecuting
 	statusBar := renderStatusBar(
 		m.width,
 		m.connected,
 		m.reconnecting,
-		spinning,
-		m.spinner.View(),
 		m.modeWarning,
 		m.styles,
 	)
@@ -1244,6 +1293,14 @@ func (m Model) View() tea.View {
 	// 6. Command palette overlay — drawn last (like crush's dialog overlay)
 	if m.commandPalette.IsVisible() {
 		overlay := m.commandPalette.View(m.width, m.height, m.styles)
+		w, h := lipgloss.Size(overlay)
+		center := centerRect(canvas.Bounds(), w, h)
+		uv.NewStyledString(overlay).Draw(canvas, center)
+	}
+
+	// 6c. Quit confirm dialog overlay
+	if m.state == StateQuitConfirm {
+		overlay := renderQuitDialog(m.width, m.height, m.styles, m.quitSelected)
 		w, h := lipgloss.Size(overlay)
 		center := centerRect(canvas.Bounds(), w, h)
 		uv.NewStyledString(overlay).Draw(canvas, center)
@@ -1337,7 +1394,7 @@ func (m *Model) fillTestData() {
 		renderUserMessage("Can you help me refactor the authentication module?", m.width-sidebarWidth-2),
 		renderAssistantMessage("Sure! Let me start by reading the current auth implementation.", m.mdRenderer),
 		renderToolCall("read_file", "internal/auth/handler.go", "", m.styles),
-		renderToolResult("read_file", "package auth\n\n// handler code...", false, m.styles),
+		renderToolResult("read_file", "package auth\n\n// handler code...", false, m.styles, m.mdRenderer, m.mdRenderer.width),
 		renderAssistantMessage("I can see the auth module. Here's what I'd suggest for the refactor.", m.mdRenderer),
 	)
 }

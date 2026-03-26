@@ -19,6 +19,7 @@ type ToolResult struct {
 	NeedsConfirmation bool
 	ToolName          string
 	Params            map[string]any
+	LineOffset        int
 }
 
 // Client communicates with the vix daemon over a Unix socket.

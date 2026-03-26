@@ -28,7 +28,7 @@ type MarkdownRenderer struct {
 }
 
 // NewMarkdownRenderer creates a new markdown renderer with the given width.
-func NewMarkdownRenderer(width int, hasDarkBG bool) *MarkdownRenderer {
+func NewMarkdownRenderer(width int, hasDarkBG bool, codeBoxBorder lipgloss.Style) *MarkdownRenderer {
 	if width < 20 {
 		width = 80
 	}
@@ -38,19 +38,14 @@ func NewMarkdownRenderer(width int, hasDarkBG bool) *MarkdownRenderer {
 		glamStyle = styles.LightStyle
 	}
 
-	dimGray := lipgloss.Color("8")
-	if !hasDarkBG {
-		dimGray = lipgloss.Color("7")
-	}
-
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStandardStyle(glamStyle),
 		glamour.WithWordWrap(width-4),
 	)
 	if err != nil {
-		return &MarkdownRenderer{width: width, hasDarkBG: hasDarkBG, codeBoxBorder: lipgloss.NewStyle().Foreground(dimGray)}
+		return &MarkdownRenderer{width: width, hasDarkBG: hasDarkBG, codeBoxBorder: codeBoxBorder}
 	}
-	return &MarkdownRenderer{renderer: r, width: width, hasDarkBG: hasDarkBG, codeBoxBorder: lipgloss.NewStyle().Foreground(dimGray)}
+	return &MarkdownRenderer{renderer: r, width: width, hasDarkBG: hasDarkBG, codeBoxBorder: codeBoxBorder}
 }
 
 type codeBlock struct {
@@ -118,17 +113,30 @@ func (m *MarkdownRenderer) glamourHighlight(lang, code string) []string {
 	// Glamour renders code blocks with 4-space indent (2 margin + 2 code indent)
 	// and pads each line with ANSI-colored spaces. Extract code lines and strip
 	// the leading indent and trailing padding.
+	//
+	// Strategy: skip blank lines that appear before the first code line (glamour
+	// margin), but preserve blank lines that appear inside the code block.
 	var lines []string
+	started := false
 	for _, line := range strings.Split(out, "\n") {
 		stripped := ansiRe.ReplaceAllString(line, "")
 		trimmed := strings.TrimRight(stripped, " ")
 		if trimmed == "" {
+			// Blank glamour line: skip leading margin; preserve interior blank lines.
+			if started {
+				lines = append(lines, "")
+			}
 			continue
 		}
 		// Code lines from glamour have 4-space indent
 		if len(stripped) >= 4 && stripped[:4] == "    " {
+			started = true
 			lines = append(lines, stripGlamourLine(line))
 		}
+	}
+	// Strip trailing blank lines added by glamour's bottom margin.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
 
 	if len(lines) == 0 {
@@ -170,7 +178,50 @@ func stripGlamourLine(line string) string {
 	// Remove any trailing mix of ANSI codes and spaces.
 	content = trailingPadRe.ReplaceAllString(content, "")
 
+	// Expand tab characters to spaces so that lipgloss.Width correctly
+	// measures the visual width when computing box padding. Tabs are
+	// expanded to the next 4-space boundary (standard code display width).
+	content = expandTabs(content, 4)
+
 	return content
+}
+
+// expandTabs replaces tab characters in s with spaces, advancing to the next
+// tabWidth-column boundary. ANSI escape sequences are skipped (zero-width).
+func expandTabs(s string, tabWidth int) string {
+	if !strings.ContainsRune(s, '\t') {
+		return s
+	}
+	var b strings.Builder
+	col := 0
+	i := 0
+	data := []byte(s)
+	for i < len(data) {
+		// Skip ANSI escape sequences without advancing column.
+		if i+1 < len(data) && data[i] == '\x1b' && data[i+1] == '[' {
+			j := i + 2
+			for j < len(data) && data[j] != 'm' {
+				j++
+			}
+			if j < len(data) {
+				j++ // consume 'm'
+			}
+			b.Write(data[i:j])
+			i = j
+			continue
+		}
+		if data[i] == '\t' {
+			spaces := tabWidth - (col % tabWidth)
+			b.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+			i++
+		} else {
+			b.WriteByte(data[i])
+			col++
+			i++
+		}
+	}
+	return b.String()
 }
 
 // replaceMarkerLine finds the line in text whose ANSI-stripped content contains
@@ -212,15 +263,20 @@ func (m *MarkdownRenderer) UpdateWidth(width int) {
 // renderCodeBox renders a code block inside a rounded box with optional language label.
 // highlightedLines are pre-highlighted code lines (with ANSI codes).
 func renderCodeBox(lang string, highlightedLines []string, width int, borderStyle lipgloss.Style) string {
-	// Inner width: total width minus 2 indent, 2 border chars, 2 padding spaces
-	innerWidth := width - 6
+	// Line number gutter: width of the largest line number + 1 space separator
+	totalLines := len(highlightedLines)
+	lineNumWidth := len(fmt.Sprintf("%d", totalLines))
+	gutterWidth := lineNumWidth + 1 // digits + trailing space before code
+
+	// Inner width: total width minus 2 indent, 2 border chars, 2 padding spaces, gutter
+	innerWidth := width - 6 - gutterWidth
 	if innerWidth < 10 {
 		innerWidth = 10
 	}
 
 	// Build top border
 	var topBorder string
-	totalBorderWidth := innerWidth + 2 // +2 for padding spaces inside box
+	totalBorderWidth := innerWidth + 2 + gutterWidth // +2 for padding spaces inside box
 
 	if lang != "" {
 		label := " " + lang + " "
@@ -234,9 +290,15 @@ func renderCodeBox(lang string, highlightedLines []string, width int, borderStyl
 		topBorder = "  " + borderStyle.Render("╭"+strings.Repeat("─", totalBorderWidth)+"╮")
 	}
 
+	// Line number style: same dim color as the border
+	lineNumStyle := borderStyle
+
 	// Build content lines
 	var contentLines []string
-	for _, line := range highlightedLines {
+	for i, line := range highlightedLines {
+		lineNum := fmt.Sprintf("%*d ", lineNumWidth, i+1)
+		gutter := lineNumStyle.Render(lineNum)
+
 		visualWidth := lipgloss.Width(line)
 		padding := innerWidth - visualWidth
 		if padding < 0 {
@@ -244,7 +306,7 @@ func renderCodeBox(lang string, highlightedLines []string, width int, borderStyl
 		}
 		padded := line + strings.Repeat(" ", padding)
 		contentLines = append(contentLines,
-			"  "+borderStyle.Render("│")+" "+padded+" "+borderStyle.Render("│"))
+			"  "+borderStyle.Render("│")+" "+gutter+padded+" "+borderStyle.Render("│"))
 	}
 
 	// Build bottom border

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -232,20 +231,24 @@ func summarizeToolOutput(name, output string) string {
 			return "no output"
 		}
 		return fmt.Sprintf("%d lines of output", lines)
+	case "write_file":
+		return "file written"
 	default:
 		return ""
 	}
 }
 
 // renderToolResult creates a rendered tool result.
-func renderToolResult(name, output string, isError bool, s Styles) ChatMessage {
-	return renderToolResultWithContext(name, output, isError, false, "", s)
+func renderToolResult(name, output string, isError bool, s Styles, md *MarkdownRenderer, width int) ChatMessage {
+	return renderToolResultWithContext(name, output, isError, false, "", s, md, width)
 }
 
 // renderToolResultWithContext creates a rendered tool result, optionally prefixing
 // with the tool name when multiple tools are executing concurrently.
 // detail is an optional rich string (e.g. edit diff) shown below the summary.
-func renderToolResultWithContext(name, output string, isError bool, showToolName bool, detail string, s Styles) ChatMessage {
+// md is used to render code-block previews (e.g. for write_file); may be nil.
+// width is the inner content width used for side-by-side diff rendering.
+func renderToolResultWithContext(name, output string, isError bool, showToolName bool, detail string, s Styles, md *MarkdownRenderer, width int) ChatMessage {
 	// Suppress tool_orchestrator preview entirely
 	if name == "tool_orchestrator" {
 		return ChatMessage{
@@ -273,6 +276,19 @@ func renderToolResultWithContext(name, output string, isError bool, showToolName
 		}
 	}
 
+	// write_file with a preview: skip the summary line entirely and render
+	// only the code box, trimming any leading newline glamour adds.
+	if name == "write_file" && detail != "" && md != nil {
+		detailRendered := strings.TrimLeft(md.Render(detail), "\n")
+		return ChatMessage{
+			Type:     MsgToolResult,
+			Text:     output,
+			Rendered: detailRendered,
+			ToolName: name,
+			Detail:   detail,
+		}
+	}
+
 	var rendered string
 	if summary := summarizeToolOutput(name, output); summary != "" {
 		rendered = s.ToolResultStyle.Render(prefix+summary) + "\n"
@@ -285,7 +301,7 @@ func renderToolResultWithContext(name, output string, isError bool, showToolName
 	}
 
 	if detail != "" {
-		rendered += renderDiffDetail(detail, s)
+		rendered += renderDiffDetail(detail, s, width)
 	}
 
 	return ChatMessage{
@@ -297,20 +313,218 @@ func renderToolResultWithContext(name, output string, isError bool, showToolName
 	}
 }
 
-// renderDiffDetail formats a diff detail block for display below a tool result.
-func renderDiffDetail(detail string, s Styles) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(strings.TrimRight(detail, "\n"), "\n") {
-		styled := "      " // 6-space indent
-		if matched, _ := regexp.MatchString(`^\d+ - `, line); matched {
-			styled += diffRemoveStyle.Render(line)
-		} else if matched, _ := regexp.MatchString(`^\d+ \+ `, line); matched {
-			styled += diffAddStyle.Render(line)
-		} else {
-			styled += s.ToolResultStyle.Render(line)
-		}
-		sb.WriteString(styled + "\n")
+
+// renderDiffDetail formats an edit diff for side-by-side display below a tool result.
+// It parses the structured tag format emitted by FormatEditDiff:
+//
+//	"H <text>"              — header / info line (shown full-width)
+//	"C <leftN> <rightN> <text>" — context line (shown full-width)
+//	"R <lineN> <text>"      — removed line (left column)
+//	"A <lineN> <text>"      — added line  (right column)
+//
+// Consecutive R/A rows that belong to the same hunk are rendered side-by-side.
+func renderDiffDetail(detail string, s Styles, width int) string {
+	const indent = "      " // 6-space indent from left edge
+	const indentWidth = 6
+
+	// Derive per-column width.
+	// Layout: indent(6) | leftCol | " │ "(3) | rightCol
+	// Each column gets equal space; minimum 10 chars each.
+	colWidth := (width - indentWidth - 3) / 2
+	if colWidth < 10 {
+		colWidth = 10
 	}
+
+	// Trim and split into tag rows
+	rows := strings.Split(strings.TrimRight(detail, "\n"), "\n")
+
+	// Collect R and A rows per hunk position so we can pair them.
+	// We process rows in order, flushing a hunk when we see a non-R/A tag.
+	type hunkRow struct {
+		removeNum  string
+		removeText string
+		addNum     string
+		addText    string
+	}
+
+	var sb strings.Builder
+
+	var pendingR []struct{ num, text string }
+	var pendingA []struct{ num, text string }
+
+	flushHunk := func() {
+		if len(pendingR) == 0 && len(pendingA) == 0 {
+			return
+		}
+		maxLen := len(pendingR)
+		if len(pendingA) > maxLen {
+			maxLen = len(pendingA)
+		}
+		for i := 0; i < maxLen; i++ {
+			// Left cell: removed line
+			var leftNum, leftText string
+			if i < len(pendingR) {
+				leftNum = pendingR[i].num
+				leftText = pendingR[i].text
+			}
+			// Right cell: added line
+			var rightNum, rightText string
+			if i < len(pendingA) {
+				rightNum = pendingA[i].num
+				rightText = pendingA[i].text
+			}
+
+			// Expand tabs first so all width measurements are accurate.
+			leftExpanded := expandTabs(leftText, 4)
+			rightExpanded := expandTabs(rightText, 4)
+
+			// When both sides are present and the text is identical, treat as a
+			// context line (unchanged) and render in white on both sides.
+			paired := leftNum != "" && rightNum != ""
+			unchanged := paired && leftExpanded == rightExpanded
+
+			// Build left cell.
+			// Context (unchanged) lines get a neutral "  " gutter; changed lines get "- ".
+			leftMarker := "- "
+			if unchanged {
+				leftMarker = "  "
+			}
+			leftPlain := ""
+			if leftNum != "" {
+				leftPlain = leftNum + leftMarker + leftExpanded
+			}
+			if lipgloss.Width(leftPlain) > colWidth {
+				leftPlain = leftPlain[:colWidth]
+			}
+			leftPad := colWidth - lipgloss.Width(leftPlain)
+			if leftPad < 0 {
+				leftPad = 0
+			}
+			var leftCell string
+			if unchanged {
+				// Identical on both sides — render as plain context (white).
+				leftCell = s.ToolResultStyle.Render(leftPlain) + strings.Repeat(" ", leftPad)
+			} else if leftNum != "" {
+				leftCell = diffRemoveStyle.Render(leftPlain) + strings.Repeat(" ", leftPad)
+			} else {
+				// Pure add: show a dimgray background placeholder on the left.
+				leftCell = diffEmptyStyle.Render(strings.Repeat(" ", colWidth))
+			}
+
+			// Build right cell.
+			// Context (unchanged) lines get a neutral "  " gutter; changed lines get "+ ".
+			rightMarker := "+ "
+			if unchanged {
+				rightMarker = "  "
+			}
+			rightPlain := ""
+			if rightNum != "" {
+				rightPlain = rightNum + rightMarker + rightExpanded
+			}
+			if lipgloss.Width(rightPlain) > colWidth {
+				rightPlain = rightPlain[:colWidth]
+			}
+			rightPad := colWidth - lipgloss.Width(rightPlain)
+			if rightPad < 0 {
+				rightPad = 0
+			}
+			var rightCell string
+			if unchanged {
+				// Identical on both sides — render as plain context (white).
+				rightCell = s.ToolResultStyle.Render(rightPlain) + strings.Repeat(" ", rightPad)
+			} else if rightNum != "" {
+				rightCell = diffAddStyle.Render(rightPlain) + strings.Repeat(" ", rightPad)
+			} else {
+				// Pure delete: show a dimgray background placeholder on the right.
+				rightCell = diffEmptyStyle.Render(strings.Repeat(" ", colWidth))
+			}
+
+			sep := s.ToolResultStyle.Render(" │ ")
+			sb.WriteString(indent + leftCell + sep + rightCell + "\n")
+		}
+		pendingR = pendingR[:0]
+		pendingA = pendingA[:0]
+	}
+
+	for _, row := range rows {
+		if row == "" {
+			continue
+		}
+		tag := string(row[0])
+		rest := ""
+		if len(row) > 2 {
+			rest = row[2:]
+		}
+
+		switch tag {
+		case "R":
+			// "R <lineN> <text>" — removed line
+			parts := strings.SplitN(rest, " ", 2)
+			num := parts[0]
+			text := ""
+			if len(parts) > 1 {
+				text = parts[1]
+			}
+			pendingR = append(pendingR, struct{ num, text string }{num, text})
+
+		case "A":
+			// "A <lineN> <text>" — added line
+			parts := strings.SplitN(rest, " ", 2)
+			num := parts[0]
+			text := ""
+			if len(parts) > 1 {
+				text = parts[1]
+			}
+			pendingA = append(pendingA, struct{ num, text string }{num, text})
+
+		case "C":
+			// Context line — flush pending hunk first, then render side-by-side.
+			flushHunk()
+			// "C <leftN> <rightN> <text>"
+			parts := strings.SplitN(rest, " ", 3)
+			leftNum := parts[0]
+			rightNum := ""
+			if len(parts) > 1 {
+				rightNum = parts[1]
+			}
+			text := ""
+			if len(parts) > 2 {
+				text = parts[2]
+			}
+			expanded := expandTabs(text, 4)
+
+			leftPlain := leftNum + "  " + expanded
+			if lipgloss.Width(leftPlain) > colWidth {
+				leftPlain = leftPlain[:colWidth]
+			}
+			leftPad := colWidth - lipgloss.Width(leftPlain)
+			if leftPad < 0 {
+				leftPad = 0
+			}
+			leftCell := s.ToolResultStyle.Render(leftPlain) + strings.Repeat(" ", leftPad)
+
+			rightPlain := rightNum + "  " + expanded
+			if lipgloss.Width(rightPlain) > colWidth {
+				rightPlain = rightPlain[:colWidth]
+			}
+			rightCell := s.ToolResultStyle.Render(rightPlain)
+
+			sep := s.ToolResultStyle.Render(" │ ")
+			sb.WriteString(indent + leftCell + sep + rightCell + "\n")
+
+		case "H":
+			// Header / info line — flush pending hunk first, then render full-width
+			flushHunk()
+			sb.WriteString(indent + s.ToolResultStyle.Render(rest) + "\n")
+
+		default:
+			// Unknown tag — flush hunk and render raw (backward compat)
+			flushHunk()
+			sb.WriteString(indent + s.ToolResultStyle.Render(row) + "\n")
+		}
+	}
+	flushHunk()
+
 	return sb.String()
 }
 
@@ -476,7 +690,8 @@ func createFileGroupHeader(filePath string, items []ChatMessage) ChatMessage {
 
 // buildRenderedChat concatenates all rendered messages into a single string.
 // It applies grouping to file operations before rendering.
-func buildRenderedChat(messages []ChatMessage, s Styles) string {
+// width is the inner content width, used for side-by-side diff rendering.
+func buildRenderedChat(messages []ChatMessage, s Styles, width int) string {
 	grouped := groupFileOperations(messages)
 
 	var sb strings.Builder
@@ -487,7 +702,7 @@ func buildRenderedChat(messages []ChatMessage, s Styles) string {
 
 		// Skip rendering grouped items' original format, render them as sub-items instead
 		if msg.IsGrouped && msg.GroupIndex > 0 {
-			rendered := renderGroupedItem(msg, s)
+			rendered := renderGroupedItem(msg, s, width)
 			sb.WriteString(rendered)
 		} else {
 			sb.WriteString(msg.Rendered)
@@ -497,7 +712,8 @@ func buildRenderedChat(messages []ChatMessage, s Styles) string {
 }
 
 // renderGroupedItem renders a tool call or result as a sub-item in a file group.
-func renderGroupedItem(msg ChatMessage, s Styles) string {
+// width is the inner content width, used for side-by-side diff rendering.
+func renderGroupedItem(msg ChatMessage, s Styles, width int) string {
 	switch msg.Type {
 	case MsgToolCall:
 		// Extract the operation details from the summary (everything after the file path)
@@ -536,7 +752,7 @@ func renderGroupedItem(msg ChatMessage, s Styles) string {
 			line = s.ToolResultStyle.Render(prefix+short) + "\n"
 		}
 		if msg.Detail != "" {
-			line += renderDiffDetail(msg.Detail, s)
+			line += renderDiffDetail(msg.Detail, s, width)
 		}
 		return line
 	default:

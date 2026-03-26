@@ -92,6 +92,8 @@ function greet(name) {
 
 func TestCompressWithTreeSitterRust(t *testing.T) {
 	src := `/// A point in 2D space.
+// line comment
+/* block comment */
 struct Point {
     x: f64,
     y: f64,
@@ -115,7 +117,46 @@ impl Point {
 	if len(out) >= len(src) {
 		t.Errorf("compressed output (%d) should be shorter than input (%d)", len(out), len(src))
 	}
+	// Comments should be stripped
+	for _, commentText := range []string{"A point in 2D space", "line comment", "block comment"} {
+		if strings.Contains(out, commentText) {
+			t.Errorf("comment text %q should be stripped from compressed output", commentText)
+		}
+	}
 	for _, tok := range []string{"struct", "Point", "fn", "distance"} {
+		if !strings.Contains(out, tok) {
+			t.Errorf("expected token %q in compressed output", tok)
+		}
+	}
+}
+
+func TestCompressWithTreeSitterJava(t *testing.T) {
+	src := `// line comment
+/* block comment */
+/** Javadoc comment */
+class Greeter {
+    String greet(String name) {
+        return "Hello, " + name;
+    }
+}
+`
+	out, err := compressWithTreeSitter(src, "Greeter.java")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty compressed output for Java")
+	}
+	if len(out) >= len(src) {
+		t.Errorf("compressed output (%d) should be shorter than input (%d)", len(out), len(src))
+	}
+	// Comments should be stripped
+	for _, commentText := range []string{"line comment", "block comment", "Javadoc comment"} {
+		if strings.Contains(out, commentText) {
+			t.Errorf("comment text %q should be stripped from compressed output", commentText)
+		}
+	}
+	for _, tok := range []string{"class", "Greeter", "return"} {
 		if !strings.Contains(out, tok) {
 			t.Errorf("expected token %q in compressed output", tok)
 		}

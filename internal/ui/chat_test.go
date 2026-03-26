@@ -184,7 +184,7 @@ func TestRenderGroupedItem(t *testing.T) {
 		GroupIndex: 1,
 	}
 
-	rendered := renderGroupedItem(callMsg, NewStyles(true))
+	rendered := renderGroupedItem(callMsg, NewStyles(true), 120)
 	if !strings.Contains(rendered, "↳") {
 		t.Errorf("Grouped item should contain arrow symbol")
 	}
@@ -201,11 +201,72 @@ func TestRenderGroupedItem(t *testing.T) {
 		GroupIndex: 2,
 	}
 
-	rendered = renderGroupedItem(resultMsg, NewStyles(true))
+	rendered = renderGroupedItem(resultMsg, NewStyles(true), 120)
 	if !strings.Contains(rendered, "[edit_file]") {
 		t.Errorf("Grouped result should contain tool name")
 	}
 	if !strings.Contains(rendered, "Edited") {
 		t.Errorf("Grouped result should contain the output message")
+	}
+}
+
+func TestRenderDiffDetailSideBySide(t *testing.T) {
+	// Build a detail string in the structured tag format produced by FormatEditDiff.
+	// One removed line and one added line should appear on the same output line.
+	detail := "H Added 1 line, removed 1 line\n" +
+		"C 1 1 package main\n" +
+		"R 2 oldFunction()\n" +
+		"A 2 newFunction()\n" +
+		"C 3 3 \n"
+
+	rendered := renderDiffDetail(detail, NewStyles(true), 120)
+
+	// Strip ANSI escape sequences before text matching: intra-line diff splits
+	// words across multiple styled spans, so raw Contains on ANSI output fails.
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+	lines := strings.Split(rendered, "\n")
+
+	// Find the line containing the removed text (ANSI-stripped).
+	removedLineIdx := -1
+	for i, l := range lines {
+		if strings.Contains(strip(l), "oldFunction") {
+			removedLineIdx = i
+			break
+		}
+	}
+	if removedLineIdx == -1 {
+		t.Fatal("rendered diff does not contain removed text 'oldFunction'")
+	}
+
+	// The added text must appear on the same line as the removed text (side-by-side).
+	if !strings.Contains(strip(lines[removedLineIdx]), "newFunction") {
+		t.Errorf("expected removed and added text on the same line for side-by-side rendering;\ngot: %q", lines[removedLineIdx])
+	}
+
+	// Header should be rendered as a plain line.
+	foundHeader := false
+	for _, l := range lines {
+		if strings.Contains(strip(l), "Added 1 line, removed 1 line") {
+			foundHeader = true
+			break
+		}
+	}
+	if !foundHeader {
+		t.Error("rendered diff does not contain the header line")
+	}
+
+	// Intra-line diff: the changed part ("old" vs "new") should be bold/highlighted,
+	// while the shared suffix "Function()" should be present in the plain (non-bold) spans.
+	// Verify by checking that the raw rendered line contains both changed and equal spans.
+	rawLine := lines[removedLineIdx]
+	if !strings.Contains(rawLine, "old") {
+		t.Error("expected 'old' to appear in the rendered diff line")
+	}
+	if !strings.Contains(rawLine, "new") {
+		t.Error("expected 'new' to appear in the rendered diff line")
+	}
+	if !strings.Contains(strip(rawLine), "Function()") {
+		t.Error("expected shared 'Function()' suffix to appear in the rendered diff line")
 	}
 }

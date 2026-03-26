@@ -100,8 +100,12 @@ func walkNode(node *sitter.Node, source []byte, result *strings.Builder, filePat
 
 	nodeType := node.Kind()
 	
-	// Skip pure whitespace nodes and comments
-	if nodeType == "\n" || nodeType == "\t" || nodeType == " " || nodeType == "comment" {
+	// Skip pure whitespace nodes and comments (all grammar variants across supported languages)
+	switch nodeType {
+	case "\n", "\t", " ",
+		"comment",       // Go, Python, JavaScript, C
+		"line_comment",  // Rust, Java
+		"block_comment": // Rust, Java
 		return
 	}
 

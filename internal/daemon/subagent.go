@@ -223,7 +223,7 @@ func subagentDispatchToolCalls(
 				hooks.OnToolCall(toolID, name, summary, reason)
 			}
 		},
-		emitToolResult: func(toolID, name string, _ map[string]any, output string, isError bool) {
+		emitToolResult: func(toolID, name string, _ map[string]any, output string, isError bool, _ int) {
 			if hooks != nil && hooks.OnToolResult != nil {
 				hooks.OnToolResult(toolID, name, output, isError)
 			}

@@ -8,23 +8,15 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// renderStatusBar renders the single bottom status line with spinner, shortcuts, and connection.
+// renderStatusBar renders the single bottom status line with shortcuts and connection.
 func renderStatusBar(
 	width int,
 	connected bool,
 	reconnecting bool,
-	spinning bool,
-	spinnerFrame string,
 	warning string,
 	s Styles,
 ) string {
 	warningStyle := lipgloss.NewStyle().Foreground(colorWarning).Italic(true)
-
-	// Left: spinner when active
-	var left string
-	if spinning {
-		left = spinnerFrame
-	}
 
 	// Center: shortcuts or warning overlay
 	var center string
@@ -44,12 +36,11 @@ func renderStatusBar(
 		right = statusDisconnectedStyle.Render("● Disconnected")
 	}
 
-	leftLen := lipgloss.Width(left)
 	centerLen := lipgloss.Width(center)
 	rightLen := lipgloss.Width(right)
 
 	// Distribute spacing: center the shortcuts in the middle of the row
-	totalContent := leftLen + centerLen + rightLen
+	totalContent := centerLen + rightLen
 	remaining := width - totalContent - 2 // -2 for outer padding
 	if remaining < 2 {
 		remaining = 2
@@ -57,7 +48,7 @@ func renderStatusBar(
 	leftPad := remaining / 2
 	rightPad := remaining - leftPad
 
-	bar := left + strings.Repeat(" ", leftPad) + center + strings.Repeat(" ", rightPad) + right
+	bar := strings.Repeat(" ", leftPad) + center + strings.Repeat(" ", rightPad) + right
 	return s.StatusBarStyle.Width(width).Render(bar)
 }
 

@@ -115,7 +115,7 @@ func (s *Session) emitHooks() *TurnHooks {
 }
 
 // emitToolResult emits an event.tool_result, enriching it with diff detail for edit_file.
-func (s *Session) emitToolResult(toolID, name string, input map[string]any, output string, isError bool) {
+func (s *Session) emitToolResult(toolID, name string, input map[string]any, output string, isError bool, lineOffset int) {
 	ev := protocol.EventToolResult{
 		ToolID: toolID, Name: name, Output: output, IsError: isError,
 	}
@@ -125,11 +125,15 @@ func (s *Session) emitToolResult(toolID, name string, input map[string]any, outp
 			oldStr, _ := input["old_string"].(string)
 			newStr, _ := input["new_string"].(string)
 			if oldStr != "" || newStr != "" {
-				pathStr, _ := input["path"].(string)
-				cwdStr, _ := input["cwd"].(string)
-				resolvedPath := resolvePathInCwd(cwdStr, pathStr)
-				ev.Detail = FormatEditDiff(resolvedPath, oldStr, newStr)
+				ev.Detail = FormatEditDiff(oldStr, newStr, lineOffset)
 			}
+		}
+	case "write_file":
+		if !isError && input != nil {
+			pathStr, _ := input["path"].(string)
+			cwdStr, _ := input["cwd"].(string)
+			resolvedPath := resolvePathInCwd(cwdStr, pathStr)
+			ev.Detail = formatWritePreview(resolvedPath)
 		}
 	case "tool_orchestrator":
 		ev.Output = ""
@@ -491,7 +495,8 @@ func (s *Session) executeToolDirect(name string, params map[string]any) *ToolRes
 
 	output, _ := data["output"].(string)
 	isError, _ := data["is_error"].(bool)
-	return &ToolResult{Output: output, IsError: isError}
+	lineOffsetF, _ := data["line_offset"].(float64)
+	return &ToolResult{Output: output, IsError: isError, LineOffset: int(lineOffsetF)}
 }
 
 // executeToolConfirmed calls a tool handler with confirmation bypassed.
@@ -524,7 +529,8 @@ func (s *Session) executeToolConfirmed(name string, params map[string]any) *Tool
 	data, _ := resp["data"].(map[string]any)
 	output, _ := data["output"].(string)
 	isError, _ := data["is_error"].(bool)
-	return &ToolResult{Output: output, IsError: isError}
+	lineOffsetF, _ := data["line_offset"].(float64)
+	return &ToolResult{Output: output, IsError: isError, LineOffset: int(lineOffsetF)}
 }
 
 const maxRetries = 10
@@ -833,7 +839,7 @@ type dispatchOptions struct {
 	// emitToolCall is called once per tool, before execution, with summary and reason.
 	emitToolCall func(toolID, name, summary, reason string)
 	// emitToolResult is called after each tool completes.
-	emitToolResult func(toolID, name string, input map[string]any, output string, isError bool)
+	emitToolResult func(toolID, name string, input map[string]any, output string, isError bool, lineOffset int)
 }
 
 // dispatchToolCalls is the single, unified tool dispatcher for both the main agent
@@ -974,7 +980,7 @@ func executeToolsParallel(ctx context.Context, tasks []*toolTask, opts dispatchO
 			t.result = &ToolResult{Output: t.dedupResult.Output, IsError: t.dedupResult.IsError}
 			t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, t.dedupResult.Output, t.dedupResult.IsError)
 			if opts.emitToolResult != nil {
-				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, t.dedupResult.Output, t.dedupResult.IsError)
+				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, t.dedupResult.Output, t.dedupResult.IsError, 0)
 			}
 			continue
 		}
@@ -998,7 +1004,7 @@ func executeToolsParallel(ctx context.Context, tasks []*toolTask, opts dispatchO
 			t.result = result
 			t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, result.Output, result.IsError)
 			if opts.emitToolResult != nil {
-				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError)
+				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError, result.LineOffset)
 			}
 		}(t)
 	}
@@ -1014,7 +1020,7 @@ func executeToolsParallel(ctx context.Context, tasks []*toolTask, opts dispatchO
 		t.result = result
 		t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, result.Output, result.IsError)
 		if opts.emitToolResult != nil {
-			opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError)
+			opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError, result.LineOffset)
 		}
 	}
 }
@@ -1031,7 +1037,7 @@ func executeToolsSequential(ctx context.Context, tasks []*toolTask, opts dispatc
 			t.result = &ToolResult{Output: t.dedupResult.Output, IsError: t.dedupResult.IsError}
 			t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, t.dedupResult.Output, t.dedupResult.IsError)
 			if opts.emitToolResult != nil {
-				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, t.dedupResult.Output, t.dedupResult.IsError)
+				opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, t.dedupResult.Output, t.dedupResult.IsError, 0)
 			}
 			continue
 		}
@@ -1042,7 +1048,7 @@ func executeToolsSequential(ctx context.Context, tasks []*toolTask, opts dispatc
 				t.result = result
 				t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, result.Output, result.IsError)
 				if result.IsError && opts.emitToolResult != nil {
-					opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, true)
+					opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, true, 0)
 				}
 				continue
 			}
@@ -1060,7 +1066,7 @@ func executeToolsSequential(ctx context.Context, tasks []*toolTask, opts dispatc
 		t.result = result
 		t.apiResult = anthropic.NewToolResultBlock(t.toolUse.ID, result.Output, result.IsError)
 		if opts.emitToolResult != nil {
-			opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError)
+			opts.emitToolResult(t.toolUse.ID, t.toolUse.Name, t.input, result.Output, result.IsError, result.LineOffset)
 		}
 	}
 }
@@ -1130,8 +1136,8 @@ func (s *Session) sessionDispatchToolCalls(ctx context.Context, msg *anthropic.M
 				Reason:  reason,
 			})
 		},
-		emitToolResult: func(toolID, name string, input map[string]any, output string, isError bool) {
-			s.emitToolResult(toolID, name, input, output, isError)
+		emitToolResult: func(toolID, name string, input map[string]any, output string, isError bool, lineOffset int) {
+			s.emitToolResult(toolID, name, input, output, isError, lineOffset)
 		},
 	}
 	return dispatchToolCalls(ctx, msg, opts)

@@ -62,9 +62,11 @@ var (
 
 	// Diff lines in tool results
 	diffRemoveStyle = lipgloss.NewStyle().
-			Foreground(colorError)
+			Foreground(lipgloss.Color("203"))
 	diffAddStyle = lipgloss.NewStyle().
 			Foreground(colorSuccess)
+	diffEmptyStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("236")) // mid-tone grey bg for empty side of a pure-add/delete
 
 	// Error
 	errorStyle = lipgloss.NewStyle().
@@ -245,7 +247,7 @@ func NewStyles(hasDarkBG bool) Styles {
 		QuestionPanelDividerStyle:    lipgloss.NewStyle().Foreground(dimGray),
 		QuestionPanelHelpStyle:       lipgloss.NewStyle().Foreground(dimGray).Italic(true),
 		QuestionPanelTabStyle:        lipgloss.NewStyle().Foreground(dimGray),
-		CodeBoxBorderStyle:           lipgloss.NewStyle().Foreground(dimGray),
+		CodeBoxBorderStyle:           lipgloss.NewStyle().Foreground(white),
 
 		ViewportFocusedStyle: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

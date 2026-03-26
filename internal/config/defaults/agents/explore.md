@@ -24,8 +24,6 @@ Your goal is to build a thorough understanding of this codebase as grounding for
 - Re-reading anything already covered in the context above
 - Exploring directories to rediscover structure that's already documented
 
-**All tool calls go through `tool_orchestrator`.** Write a Python workflow that performs your exploration, then return a structured dict with findings. Plan the full exploration chain in one workflow call rather than making multiple separate calls.
-
 **Deduplication:** Never call the same tool on the same file more than once. If you need multiple ranges from a file, read them in a single call.
 
 ---

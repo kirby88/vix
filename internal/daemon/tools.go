@@ -208,6 +208,76 @@ func readFileImpl(cwd, path string, offset, limit *int, mode string) (string, er
 	return numberedOutput, nil
 }
 
+// extToLang maps a file extension (e.g. ".go") to a Markdown language hint.
+func extToLang(ext string) string {
+	switch ext {
+	case ".go":
+		return "go"
+	case ".py":
+		return "python"
+	case ".js", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".rs":
+		return "rust"
+	case ".rb":
+		return "ruby"
+	case ".sh", ".bash":
+		return "bash"
+	case ".json":
+		return "json"
+	case ".yaml", ".yml":
+		return "yaml"
+	case ".toml":
+		return "toml"
+	case ".md":
+		return "markdown"
+	case ".html", ".htm":
+		return "html"
+	case ".css":
+		return "css"
+	case ".c", ".h":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	default:
+		return ""
+	}
+}
+
+// formatWritePreview reads the written file and returns a markdown fenced code
+// block containing the first 10 lines, suitable for use as a Detail field in
+// EventToolResult. The language hint is derived from the file extension.
+// Returns "" if the file cannot be read.
+func formatWritePreview(filePath string) string {
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(raw), "\n")
+	// Remove trailing empty line produced by Split when file ends with \n
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	n := len(lines)
+	truncated := n > 10
+	if truncated {
+		n = 10
+	}
+	lang := extToLang(filepath.Ext(filePath))
+	var b strings.Builder
+	b.WriteString("```" + lang + "\n")
+	for _, line := range lines[:n] {
+		b.WriteString(line + "\n")
+	}
+	if truncated {
+		b.WriteString("// ...\n")
+	}
+	b.WriteString("```")
+	return b.String()
+}
+
 func writeFileImpl(cwd, path, content string) (string, error) {
 	p := resolvePathInCwd(cwd, path)
 	dir := filepath.Dir(p)
@@ -221,32 +291,38 @@ func writeFileImpl(cwd, path, content string) (string, error) {
 	return fmt.Sprintf("Wrote %d bytes to %s", len(encoded), path), nil
 }
 
-func editFileImpl(cwd, path, oldString, newString string) (string, error) {
+func editFileImpl(cwd, path, oldString, newString string) (string, int, error) {
 	p := resolvePathInCwd(cwd, path)
 	if _, err := os.Stat(p); os.IsNotExist(err) {
-		return "", fmt.Errorf("file not found: %s", path)
+		return "", 0, fmt.Errorf("file not found: %s", path)
 	}
 
 	raw, err := os.ReadFile(p)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	text := string(raw)
 	count := strings.Count(text, oldString)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in file")
+		return "", 0, fmt.Errorf("old_string not found in file")
 	}
 	if count > 1 {
-		return "", fmt.Errorf("old_string found %d times (must be unique)", count)
+		return "", 0, fmt.Errorf("old_string found %d times (must be unique)", count)
+	}
+
+	// Compute line offset before writing so the diff preview shows real file line numbers.
+	lineOffset := 0
+	if idx := strings.Index(text, oldString); idx >= 0 {
+		lineOffset = strings.Count(text[:idx], "\n")
 	}
 
 	newText := strings.Replace(text, oldString, newString, 1)
 	newRaw := []byte(newText)
 	if err := os.WriteFile(p, newRaw, 0o644); err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return fmt.Sprintf("Edited %s (replaced 1 occurrence).", path), nil
+	return fmt.Sprintf("Edited %s (replaced 1 occurrence).", path), lineOffset, nil
 }
 
 func deleteFileImpl(cwd, path string) (string, error) {
@@ -312,106 +388,137 @@ func bashImpl(server *Server, command, cwd string) (string, error) {
 }
 
 
-// FormatEditDiff builds a unified-style diff with surrounding context from the file.
-// filePath is the path to the file after the edit has been applied.
-// The output includes ±3 lines of context and line numbers.
-func FormatEditDiff(filePath, oldStr, newStr string) string {
-	const maxDiffLines = 20
-	const contextLines = 3
-
-	// Read the file after the edit
-	raw, err := os.ReadFile(filePath)
+// FormatEditDiff builds a structured side-by-side diff by running the system
+// `diff -U3` command on the old and new strings and parsing its unified output.
+// The result uses tagged rows consumed by renderDiffDetail in chat.go:
+//
+//	"H <text>\n"                  — header line (summary)
+//	"C <leftN> <rightN> <text>\n" — context line present on both sides
+//	"R <leftN> <text>\n"          — removed line (left side only)
+//	"A <rightN> <text>\n"         — added line (right side only)
+//
+// lineOffset is the 0-based line index of oldStr's first line within the real
+// file, computed before the write so the numbers reflect actual file positions.
+func FormatEditDiff(oldStr, newStr string, lineOffset int) string {
+	// Write old and new content to temp files so diff can compare them.
+	oldTmp, err := os.CreateTemp("", "vix-diff-old-*")
 	if err != nil {
-		// Fallback: no file context available
-		return formatEditDiffSimple(oldStr, newStr)
+		return formatEditDiffFallback(oldStr, newStr, lineOffset)
 	}
-	newContent := string(raw)
+	defer os.Remove(oldTmp.Name())
+	if _, err := oldTmp.WriteString(oldStr); err != nil {
+		oldTmp.Close()
+		return formatEditDiffFallback(oldStr, newStr, lineOffset)
+	}
+	oldTmp.Close()
 
-	// Reconstruct original content by reversing the edit
-	origContent := strings.Replace(newContent, newStr, oldStr, 1)
-	origLines := strings.Split(origContent, "\n")
+	newTmp, err := os.CreateTemp("", "vix-diff-new-*")
+	if err != nil {
+		return formatEditDiffFallback(oldStr, newStr, lineOffset)
+	}
+	defer os.Remove(newTmp.Name())
+	if _, err := newTmp.WriteString(newStr); err != nil {
+		newTmp.Close()
+		return formatEditDiffFallback(oldStr, newStr, lineOffset)
+	}
+	newTmp.Close()
 
-	// Find where the old string starts in the original file
-	beforeOld := origContent[:strings.Index(origContent, oldStr)]
-	editStartLine := strings.Count(beforeOld, "\n") // 0-based
+	// Run diff -U3 (unified, 3 context lines). Exit code 1 means differences
+	// found (normal); only exit code >1 signals a real error.
+	cmd := exec.Command("diff", "-U3", "--label", "old", "--label", "new", oldTmp.Name(), newTmp.Name())
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			return formatEditDiffFallback(oldStr, newStr, lineOffset)
+		}
+	}
 
-	oldLines := strings.Split(oldStr, "\n")
-	newLines := strings.Split(newStr, "\n")
+	return parseUnifiedDiff(string(out), oldStr, newStr, lineOffset)
+}
 
-	removedCount := len(oldLines)
-	addedCount := len(newLines)
+// parseUnifiedDiff converts unified diff output into the H/C/R/A tag format
+// expected by renderDiffDetail in chat.go.
+// lineOffset is the 0-based line index of oldStr's first line within the real file,
+// used to convert snippet-relative line numbers to actual file line numbers.
+func parseUnifiedDiff(unified, oldStr, newStr string, lineOffset int) string {
+	addedLines := strings.Count(newStr, "\n") + 1
+	removedLines := strings.Count(oldStr, "\n") + 1
 
 	var b strings.Builder
+	b.WriteString(fmt.Sprintf("H +%d -%d lines\n", addedLines, removedLines))
 
-	// Header
-	b.WriteString(fmt.Sprintf("Added %d line, removed %d line\n", addedCount, removedCount))
+	lines := strings.Split(unified, "\n")
 
-	total := 1 // count header
+	// Track current line numbers on each side as we walk hunks.
+	var leftN, rightN int
 
-	// Context lines before
-	ctxStart := editStartLine - contextLines
-	if ctxStart < 0 {
-		ctxStart = 0
-	}
-	for i := ctxStart; i < editStartLine; i++ {
-		if total >= maxDiffLines {
-			b.WriteString("  ... (truncated)\n")
-			return b.String()
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
 		}
-		b.WriteString(fmt.Sprintf("  %d  %s\n", i+1, origLines[i]))
-		total++
-	}
-
-	// Removed lines
-	for i, line := range oldLines {
-		if total >= maxDiffLines {
-			b.WriteString("  ... (truncated)\n")
-			return b.String()
+		// Unified diff hunk header: @@ -l,s +l,s @@
+		if strings.HasPrefix(line, "@@") {
+			// Parse left and right starting line numbers.
+			// Format: @@ -<l>[,<s>] +<l>[,<s>] @@
+			// Note: Go's fmt.Sscanf does not support %*d (C-style suppression),
+			// so we parse by scanning tokens for the "-" and "+" fields.
+			var ls, rs int
+			for _, tok := range strings.Fields(line) {
+				if strings.HasPrefix(tok, "-") {
+					fmt.Sscanf(strings.TrimPrefix(tok, "-"), "%d", &ls)
+				} else if strings.HasPrefix(tok, "+") {
+					fmt.Sscanf(strings.TrimPrefix(tok, "+"), "%d", &rs)
+				}
+			}
+			// Apply offset so numbers reflect real file positions.
+			leftN = ls + lineOffset
+			rightN = rs + lineOffset
+			continue
 		}
-		b.WriteString(fmt.Sprintf("%d - %s\n", editStartLine+i+1, line))
-		total++
-	}
-
-	// Added lines
-	for i, line := range newLines {
-		if total >= maxDiffLines {
-			b.WriteString("  ... (truncated)\n")
-			return b.String()
+		// Skip the --- / +++ file header lines.
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			continue
 		}
-		b.WriteString(fmt.Sprintf("%d + %s\n", editStartLine+i+1, line))
-		total++
-	}
 
-	// Context lines after (in the new file, after the replacement)
-	newFileLines := strings.Split(newContent, "\n")
-	afterStart := editStartLine + addedCount
-	afterEnd := afterStart + contextLines
-	if afterEnd > len(newFileLines) {
-		afterEnd = len(newFileLines)
-	}
-	for i := afterStart; i < afterEnd; i++ {
-		if total >= maxDiffLines {
-			b.WriteString("  ... (truncated)\n")
-			return b.String()
+		switch line[0] {
+		case ' ':
+			// Context line — present on both sides.
+			b.WriteString(fmt.Sprintf("C %d %d %s\n", leftN, rightN, line[1:]))
+			leftN++
+			rightN++
+		case '-':
+			// Removed line.
+			b.WriteString(fmt.Sprintf("R %d %s\n", leftN, line[1:]))
+			leftN++
+		case '+':
+			// Added line.
+			b.WriteString(fmt.Sprintf("A %d %s\n", rightN, line[1:]))
+			rightN++
 		}
-		b.WriteString(fmt.Sprintf("  %d  %s\n", i+1, newFileLines[i]))
-		total++
 	}
 
 	return b.String()
 }
 
-// formatEditDiffSimple is a fallback when the file cannot be read.
-func formatEditDiffSimple(oldStr, newStr string) string {
+// formatEditDiffFallback is used when diff is unavailable or temp file creation
+// fails. It emits the same H/R/A tag format without context lines.
+// lineOffset is the 0-based line index of oldStr's first line within the real file.
+func formatEditDiffFallback(oldStr, newStr string, lineOffset int) string {
 	oldLines := strings.Split(oldStr, "\n")
 	newLines := strings.Split(newStr, "\n")
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Added %d line, removed %d line\n", len(newLines), len(oldLines)))
-	for _, line := range oldLines {
-		b.WriteString("- " + line + "\n")
+	b.WriteString(fmt.Sprintf("H +%d -%d lines\n", len(newLines), len(oldLines)))
+	maxPairs := len(oldLines)
+	if len(newLines) > maxPairs {
+		maxPairs = len(newLines)
 	}
-	for _, line := range newLines {
-		b.WriteString("+ " + line + "\n")
+	for i := 0; i < maxPairs; i++ {
+		if i < len(oldLines) {
+			b.WriteString(fmt.Sprintf("R %d %s\n", i+1+lineOffset, oldLines[i]))
+		}
+		if i < len(newLines) {
+			b.WriteString(fmt.Sprintf("A %d %s\n", i+1+lineOffset, newLines[i]))
+		}
 	}
 	return b.String()
 }
@@ -480,7 +587,7 @@ func RegisterToolHandlers(s *Server) {
 		oldString, _ := params["old_string"].(string)
 		newString, _ := params["new_string"].(string)
 		cwd, _ := params["cwd"].(string)
-		output, err := editFileImpl(cwd, path, oldString, newString)
+		output, lineOffset, err := editFileImpl(cwd, path, oldString, newString)
 		if err != nil {
 			return toolOK(fmt.Sprintf("Error: %v", err), true), nil
 		}
@@ -488,7 +595,9 @@ func RegisterToolHandlers(s *Server) {
 			go flushBrainUpdate(s, []string{path})
 		}
 		s.LogAccess("edit_file", params)
-		return toolOK(output, false), nil
+		result := toolOK(output, false)
+		result["data"].(map[string]any)["line_offset"] = lineOffset
+		return result, nil
 	})
 
 	s.RegisterHandler("tool.delete_file", func(data map[string]any) (map[string]any, error) {
