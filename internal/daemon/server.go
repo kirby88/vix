@@ -33,47 +33,26 @@ type Server struct {
 	sessionMu sync.Mutex
 	serverCtx context.Context
 
-	// Sandbox configuration
-	sandboxConfig  *config.DaemonConfig
-	sandboxEnabled bool
-	sandboxMu      sync.RWMutex
-
-	// Authoritative working directory (if set, overrides client CWD)
-	workdir string
-
 	// User-level config directory (~/.vix/)
 	homeVixDir string
 }
 
 // NewServer creates a new daemon server.
-func NewServer(sockPath, apiKey, model, workdir string, daemonConfig *config.DaemonConfig) *Server {
+func NewServer(sockPath, apiKey, model string, daemonConfig *config.DaemonConfig) *Server {
 	sid := generateSessionID()
 	s := &Server{
-		handlers:       make(map[string]HandlerFunc),
-		sockPath:       sockPath,
-		sessionID:      sid,
-		apiKey:         apiKey,
-		model:          model,
-		sessions:       make(map[string]*Session),
-		sandboxConfig:  daemonConfig,
-		sandboxEnabled: daemonConfig.Sandbox.Enabled,
-		workdir:        workdir,
-		homeVixDir:     daemonConfig.HomeVixDir,
+		handlers:   make(map[string]HandlerFunc),
+		sockPath:   sockPath,
+		sessionID:  sid,
+		apiKey:     apiKey,
+		model:      model,
+		sessions:   make(map[string]*Session),
+		homeVixDir: daemonConfig.HomeVixDir,
 	}
 
 	// Set LLM log directory to ~/.vix/logs/
 	if s.homeVixDir != "" {
 		SetLLMLogDir(filepath.Join(s.homeVixDir, "logs"))
-	}
-
-	// Initialize access stats database
-	db, err := initAccessStatsDB(daemonConfig.ProjectPath)
-	if err != nil {
-		LogError("Failed to initialize access stats DB (continuing without stats): %v", err)
-		s.accessDB = nil
-	} else {
-		s.accessDB = db
-		LogInfo("Access stats database initialized (session=%s)", sid)
 	}
 
 	return s
@@ -206,12 +185,11 @@ func (s *Server) handleSession(conn net.Conn, scanner *bufio.Scanner, startCmd p
 	json.Unmarshal(startCmd.Data, &startData)
 
 	cwd := startData.CWD
-	if s.workdir != "" {
-		cwd = s.workdir
-	} else if cwd == "" {
+	if cwd == "" {
 		cwd2, _ := os.Getwd()
 		cwd = cwd2
 	}
+
 	model := startData.Model
 	if model == "" {
 		model = s.model
@@ -220,8 +198,16 @@ func (s *Server) handleSession(conn net.Conn, scanner *bufio.Scanner, startCmd p
 	// Create LLM with daemon's API key
 	llm := NewLLM(s.apiKey, model)
 
+	// Initialize access stats database for this session's project
+	db, err := initAccessStatsDB(cwd)
+	if err != nil {
+		LogError("Failed to initialize access stats DB (continuing without stats): %v", err)
+	} else {
+		s.accessDB = db
+	}
+
 	sessionID := generateSessionID()
-	session := NewSession(sessionID, s, llm, model, cwd, s.homeVixDir, startData.ForceInit, s.serverCtx)
+	session := NewSession(sessionID, s, llm, model, cwd, s.homeVixDir, startData.ForceInit, startData.DisableAutomaticWritePermission, startData.Headless, s.serverCtx)
 	s.sessionMu.Lock()
 	s.sessions[sessionID] = session
 	s.sessionMu.Unlock()

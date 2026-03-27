@@ -23,9 +23,11 @@ type SessionEvent struct {
 
 // SessionStartData is sent to start a new agent session.
 type SessionStartData struct {
-	CWD       string `json:"cwd"`
-	Model     string `json:"model"`
-	ForceInit bool   `json:"force_init"`
+	CWD                             string `json:"cwd"`
+	Model                           string `json:"model"`
+	ForceInit                       bool   `json:"force_init"`
+	DisableAutomaticWritePermission bool   `json:"disable_automatic_write_permission"`
+	Headless                        bool   `json:"headless"`
 }
 
 // SessionInputData carries user chat input.

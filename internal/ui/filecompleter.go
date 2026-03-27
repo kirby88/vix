@@ -102,10 +102,32 @@ func (f *FileCompleter) reload() {
 			continue
 		}
 		if lowerQuery == "" || strings.HasPrefix(strings.ToLower(e.Name()), lowerQuery) {
-			filtered = append(filtered, e)
+			filtered = append(filtered, resolvedDirEntry(f.currentDir, e))
 		}
 	}
 	f.entries = filtered
+}
+
+// symlinkDirEntry wraps a DirEntry and overrides IsDir to return true when the
+// entry is a symlink pointing to a directory.
+type symlinkDirEntry struct {
+	os.DirEntry
+	isDir bool
+}
+
+func (s symlinkDirEntry) IsDir() bool { return s.isDir }
+
+// resolvedDirEntry returns the entry unchanged if it is not a symlink.
+// For symlinks it wraps the entry so that IsDir() reflects the symlink target.
+func resolvedDirEntry(dir string, e os.DirEntry) os.DirEntry {
+	if e.Type()&os.ModeSymlink == 0 {
+		return e
+	}
+	info, err := os.Stat(filepath.Join(dir, e.Name()))
+	if err != nil {
+		return e
+	}
+	return symlinkDirEntry{DirEntry: e, isDir: info.IsDir()}
 }
 
 // View renders the file completer popup. Returns an empty string when not visible.

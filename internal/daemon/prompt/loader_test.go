@@ -373,20 +373,31 @@ func TestRealGeneralAgent_FrontmatterStripped(t *testing.T) {
 	loader := GetLoader()
 	
 	// Construct path relative to the test file
-	generalPath := filepath.Join("..", "..", "..", ".vix", "agents", "general.md")
+	generalPath := filepath.Join("..", "..", "config", "defaults", "agents", "general.md")
 	content := loader.Load(generalPath, map[string]string{
 		"working_directory": "/test/dir",
-	}, filepath.Join("..", "..", "..", ".vix"), nil)
+	}, filepath.Join("..", "..", "config", "defaults"), nil)
 	
 	// The frontmatter should be stripped, so content should not start with "---"
 	trimmed := strings.TrimSpace(content)
-	if strings.HasPrefix(trimmed, "---") {
-		t.Errorf("Frontmatter was not stripped from general.md. Content starts with:\n%s", trimmed[:200])
+	if len(trimmed) == 0 {
+		t.Fatalf("Loaded content is empty - file may not exist")
 	}
-	
+	if strings.HasPrefix(trimmed, "---") {
+		preview := trimmed
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		t.Errorf("Frontmatter was not stripped from general.md. Content starts with:\n%s", preview)
+	}
+
 	// The content should start with "# Identity"
 	if !strings.HasPrefix(trimmed, "# Identity") {
-		t.Errorf("Expected content to start with '# Identity', but got:\n%s", trimmed[:100])
+		preview := trimmed
+		if len(preview) > 100 {
+			preview = preview[:100]
+		}
+		t.Errorf("Expected content to start with '# Identity', but got:\n%s", preview)
 	}
 	
 	// Verify that the frontmatter metadata is NOT in the content

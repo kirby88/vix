@@ -5,10 +5,12 @@ import (
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter_swift "github.com/gridlhq-dev/tree-sitter-swift/bindings/go"
 	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tree_sitter_kotlin "github.com/tree-sitter-grammars/tree-sitter-kotlin/bindings/go"
 	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
 )
@@ -23,20 +25,25 @@ func init() {
 	rsLang := sitter.NewLanguage(tree_sitter_rust.Language())
 	cLang := sitter.NewLanguage(tree_sitter_c.Language())
 	javaLang := sitter.NewLanguage(tree_sitter_java.Language())
+	swiftLang := sitter.NewLanguage(tree_sitter_swift.Language())
+	kotlinLang := sitter.NewLanguage(tree_sitter_kotlin.Language())
 
 	languageMap = map[string]func() *sitter.Language{
-		".go":   func() *sitter.Language { return goLang },
-		".js":   func() *sitter.Language { return jsLang },
-		".jsx":  func() *sitter.Language { return jsLang },
-		".ts":   func() *sitter.Language { return jsLang },
-		".tsx":  func() *sitter.Language { return jsLang },
-		".py":   func() *sitter.Language { return pyLang },
-		".rs":   func() *sitter.Language { return rsLang },
-		".c":    func() *sitter.Language { return cLang },
-		".cpp":  func() *sitter.Language { return cLang },
-		".h":    func() *sitter.Language { return cLang },
-		".hpp":  func() *sitter.Language { return cLang },
-		".java": func() *sitter.Language { return javaLang },
+		".go":     func() *sitter.Language { return goLang },
+		".js":     func() *sitter.Language { return jsLang },
+		".jsx":    func() *sitter.Language { return jsLang },
+		".ts":     func() *sitter.Language { return jsLang },
+		".tsx":    func() *sitter.Language { return jsLang },
+		".py":     func() *sitter.Language { return pyLang },
+		".rs":     func() *sitter.Language { return rsLang },
+		".c":      func() *sitter.Language { return cLang },
+		".cpp":    func() *sitter.Language { return cLang },
+		".h":      func() *sitter.Language { return cLang },
+		".hpp":    func() *sitter.Language { return cLang },
+		".java":   func() *sitter.Language { return javaLang },
+		".swift":  func() *sitter.Language { return swiftLang },
+		".kt":     func() *sitter.Language { return kotlinLang },
+		".kts":    func() *sitter.Language { return kotlinLang },
 	}
 }
 
@@ -59,7 +66,7 @@ func languageUsesSemicolons(filePath string) bool {
 	switch ext {
 	case ".js", ".jsx", ".ts", ".tsx", ".c", ".cpp", ".h", ".hpp", ".java", ".rs", ".go":
 		return true
-	case ".py":
+	case ".py", ".swift", ".kt", ".kts":
 		return false
 	default:
 		return false
@@ -103,9 +110,10 @@ func walkNode(node *sitter.Node, source []byte, result *strings.Builder, filePat
 	// Skip pure whitespace nodes and comments (all grammar variants across supported languages)
 	switch nodeType {
 	case "\n", "\t", " ",
-		"comment",       // Go, Python, JavaScript, C
-		"line_comment",  // Rust, Java
-		"block_comment": // Rust, Java
+		"comment",            // Go, Python, JavaScript, C
+		"line_comment",       // Rust, Java
+		"block_comment",      // Rust, Java
+		"multiline_comment":  // Swift
 		return
 	}
 

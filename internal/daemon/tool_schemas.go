@@ -443,6 +443,25 @@ func GetToolSchema(name string) *anthropic.ToolUnionParam {
 	return nil
 }
 
+// ExcludeTools removes tools with the given names from a tool list.
+func ExcludeTools(tools []anthropic.ToolUnionParam, names ...string) []anthropic.ToolUnionParam {
+	if len(names) == 0 {
+		return tools
+	}
+	exclude := make(map[string]bool, len(names))
+	for _, n := range names {
+		exclude[n] = true
+	}
+	var filtered []anthropic.ToolUnionParam
+	for _, t := range tools {
+		if t.OfTool != nil && exclude[t.OfTool.Name] {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
+}
+
 // FilterToolSchemas returns only the tool schemas whose names appear in the allowed list.
 // If allowed is nil, returns all tools.
 func FilterToolSchemas(allowed []string) []anthropic.ToolUnionParam {

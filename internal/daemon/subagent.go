@@ -44,7 +44,7 @@ type TurnHooks struct {
 	OnStreamDelta func(delta string)
 	OnStreamDone  func(inputTokens, outputTokens, cacheCreation, cacheRead, elapsedMs int64)
 	OnToolCall    func(toolID, name, summary, reason string)
-	OnToolResult  func(toolID, name, output string, isError bool)
+	OnToolResult  func(toolID, name string, input map[string]any, output string, isError bool)
 }
 
 // BackgroundTask tracks an in-flight or completed background subagent.
@@ -223,9 +223,9 @@ func subagentDispatchToolCalls(
 				hooks.OnToolCall(toolID, name, summary, reason)
 			}
 		},
-		emitToolResult: func(toolID, name string, _ map[string]any, output string, isError bool, _ int) {
+		emitToolResult: func(toolID, name string, input map[string]any, output string, isError bool, _ int) {
 			if hooks != nil && hooks.OnToolResult != nil {
-				hooks.OnToolResult(toolID, name, output, isError)
+				hooks.OnToolResult(toolID, name, input, output, isError)
 			}
 		},
 	}

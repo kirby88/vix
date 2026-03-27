@@ -639,6 +639,36 @@ func TestStripMarkdownFence(t *testing.T) {
 	}
 }
 
+// ── resolveParams with tool step params ──
+
+// TestResolveParamsWithStepParams verifies that once stepParams are merged into
+// toolVars (as the fix does), $(plan) in an option's params block resolves to the
+// value that was passed into the tool step — not just $(step.plan).
+func TestResolveParamsWithStepParams(t *testing.T) {
+	// Simulate the toolVars map as built after the fix: baseVars merged with
+	// buildStepVars output, then stepParams merged on top.
+	toolVars := map[string]string{
+		"step.prior.output": "prior step result",
+		"plan":              "my plan content", // injected from stepParams
+	}
+
+	// An option's steps[].params block that references $(plan) — the current
+	// step's own input param.
+	optionParams := map[string]string{
+		"plan":     "$(plan)",
+		"feedback": "$(step.prior.output)",
+	}
+
+	resolved := resolveParams(optionParams, toolVars)
+
+	if resolved["plan"] != "my plan content" {
+		t.Errorf("$(plan) should resolve to stepParam value; got %q", resolved["plan"])
+	}
+	if resolved["feedback"] != "prior step result" {
+		t.Errorf("$(step.prior.output) should resolve to prior step output; got %q", resolved["feedback"])
+	}
+}
+
 // ── buildStepVars ──
 
 func TestBuildStepVars(t *testing.T) {

@@ -19,8 +19,8 @@ func lighten(hex string, factor float64) color.Color {
 }
 
 var (
-	primaryHex   = "#E07060"
-	secondaryHex = "#50B0E0"
+	primaryHex   = "#BC63FC"
+	secondaryHex = "#A3FC63"
 )
 
 var (

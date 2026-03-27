@@ -864,6 +864,9 @@ func (s *Session) executeParallelSteps(
 						return
 					}
 					agent = NewAgentRunner(config, apiKey, parentModel, s.cwd)
+					if s.headless {
+						agent.Tools = ExcludeTools(agent.Tools, "ask_question_to_user")
+					}
 				} else if step.ForkFrom != "" {
 					mu.Lock()
 					source, ok := exec.StepAgents[step.ForkFrom]
@@ -945,6 +948,9 @@ func (s *Session) executeParallelSteps(
 					toolVars[k] = v
 				}
 				mu.Unlock()
+				for k, v := range stepParams {
+					toolVars[k] = v
+				}
 
 				_, output, err := s.executeToolStep(step, toolVars)
 				stepElapsed := time.Since(stepStart).Milliseconds()
@@ -1108,6 +1114,9 @@ func (s *Session) executeWorkflow(pf *WorkflowDef, prompt string) error {
 			for k, v := range buildStepVars(exec.StepResults) {
 				toolVars[k] = v
 			}
+			for k, v := range stepParams {
+				toolVars[k] = v
+			}
 
 			nextRefs, output, err := s.executeToolStep(step, toolVars)
 			if err != nil {
@@ -1212,6 +1221,9 @@ func (s *Session) executeWorkflow(pf *WorkflowDef, prompt string) error {
 					return fmt.Errorf("step '%s': agent '%s' not found in custom agents", stepID, step.Agent)
 				}
 				agent = NewAgentRunner(config, apiKey, parentModel, s.cwd)
+				if s.headless {
+					agent.Tools = ExcludeTools(agent.Tools, "ask_question_to_user")
+				}
 				agentLabel = step.Agent
 			} else if step.ForkFrom != "" {
 				source, ok := exec.StepAgents[step.ForkFrom]
@@ -1306,11 +1318,11 @@ func (s *Session) executeWorkflow(pf *WorkflowDef, prompt string) error {
 					tracker.RecordCall(name)
 					baseHooks.OnToolCall(toolID, name, summary, reason)
 				},
-				OnToolResult: func(toolID, name, output string, isError bool) {
+				OnToolResult: func(toolID, name string, input map[string]any, output string, isError bool) {
 					if !isError {
 						tracker.RecordResult(name, output)
 					}
-					baseHooks.OnToolResult(toolID, name, output, isError)
+					baseHooks.OnToolResult(toolID, name, input, output, isError)
 				},
 			}
 

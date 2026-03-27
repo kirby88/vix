@@ -343,25 +343,6 @@ func deleteFileImpl(cwd, path string) (string, error) {
 
 func bashImpl(server *Server, command, cwd string) (string, error) {
 	LogInfo("[tool.bash] cwd=%s command=%s", cwd, command)
-	// Check if sandbox is enabled
-	server.sandboxMu.RLock()
-	enabled := server.sandboxEnabled
-	server.sandboxMu.RUnlock()
-
-	// Route through sandbox if enabled
-	if enabled {
-		ctx := context.Background()
-		return executeSandboxed(
-			ctx,
-			command,
-			cwd,
-			server.sandboxConfig.ProjectPath,
-			server.sandboxConfig.Sandbox.Filesystem.AllowWrite,
-			server.sandboxConfig.Sandbox.Filesystem.DenyRead,
-		)
-	}
-
-	// Otherwise, execute directly
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -526,8 +507,8 @@ func formatEditDiffFallback(oldStr, newStr string, lineOffset int) string {
 // --- Async handler wrappers ---
 
 func RegisterToolHandlers(s *Server) {
-	// Load tool backend config and create runners
-	toolsCfg := loadToolsConfig(s.sandboxConfig.ProjectPath)
+	// Load tool backend config from home config (project config loaded per-session)
+	toolsCfg := loadToolsConfig("")
 	grepBackend := newGrepRunner(toolsCfg.Grep.Backend)
 	globBackend := newGlobRunner(toolsCfg.Glob.Backend)
 

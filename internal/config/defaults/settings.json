@@ -15,7 +15,6 @@
   "workflows": [
     {
       "name": "Plan",
-      "summary": "$(step.execute.display)",
       "entry_point": {
         "id": "explore",
         "params": {
@@ -54,7 +53,10 @@
           "prompt": "$(file:prompts/plan_workflow/plan.md)",
           "next_steps": [
             {
-              "id": "review"
+              "id": "review",
+              "params": {
+                "plan": "$(step.plan)"
+              }
             }
           ],
           "stream": true,
@@ -65,13 +67,21 @@
           "type": "tool",
           "tool": "ask_question_to_user",
           "question": "Review the plan above. What would you like to do?",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan to address the user ask"
+            }
+          },
           "options": [
             {
               "title": "Accept",
               "description": "Approve the plan and proceed to execution",
               "steps": [
                 {
-                  "id": "execute"
+                  "id": "execute",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
                 }
               ]
             },
@@ -112,25 +122,32 @@
           "prompt": "$(file:prompts/plan_workflow/refine.md)",
           "next_steps": [
             {
+              "params": {
+                "plan": "$(step.refine)"
+              },
               "id": "review"
             }
           ],
-          "stream": false,
-          "json_output": true,
-          "display_key": "display",
+          "stream": true,
+          "json_output": false,
           "explanation": "Refining the plan based on critique feedback"
         },
         "execute": {
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan for updating the code"
+            }
+          },
           "type": "agent",
-          "fork_from": "plan",
+          "agent": "general",
           "prompt": "$(file:prompts/plan_workflow/execute.md)",
-          "explanation": "Executing the approved plan"
+          "explanation": "Executing the approved plan",
+          "stream": true
         }
       }
     },
     {
       "name": "Plan & Critic (more resources intensive)",
-      "summary": "$(step.execute.display)",
       "entry_point": {
         "id": "explore",
         "params": {
@@ -169,34 +186,38 @@
           "prompt": "$(file:prompts/plan_workflow/plan.md)",
           "next_steps": [
             {
-              "id": "critic",
+              "id": "critique",
               "params": {
+                "plan": "$(step.plan)",
                 "prompt": "$(step.plan.prompt)"
               }
             }
           ],
-          "stream": false,
-          "json_output": true,
-          "display_key": "display",
+          "stream": true,
+          "json_output": false,
           "explanation": "Generating a draft implementation plan"
         },
-        "critic": {
+        "critique": {
           "type": "agent",
           "fork_from": "explore",
           "input_params": {
             "prompt": {
               "description": "The user's plan description"
+            },
+            "plan": {
+              "description": "The user's plan description"
             }
           },
-          "prompt": "$(file:prompts/plan_workflow/critic.md)",
+          "prompt": "$(file:prompts/plan_workflow/critique.md)",
           "next_steps": [
             {
-              "id": "refine"
+              "id": "refine",
+              "params": {
+                "feedback": "$(step.critique)"
+              }
             }
           ],
-          "stream": false,
-          "json_output": true,
-          "display_key": "display",
+          "stream": true,
           "explanation": "Reviewing the plan for flaws, gaps, and risks"
         },
         "refine": {
@@ -210,34 +231,35 @@
           "prompt": "$(file:prompts/plan_workflow/refine.md)",
           "next_steps": [
             {
+              "params": {
+                "plan": "$(step.refine)"
+              },
               "id": "review"
             }
           ],
-          "stream": false,
-          "json_output": true,
-          "display_key": "display",
+          "stream": true,
+          "json_output": false,
           "explanation": "Refining the plan based on critique feedback"
         },
         "review": {
           "type": "tool",
           "tool": "ask_question_to_user",
           "question": "Review the plan above. What would you like to do?",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan to address the user ask"
+            }
+          },
           "options": [
             {
               "title": "Accept",
               "description": "Approve the plan and proceed to execution",
               "steps": [
                 {
-                  "id": "execute"
-                }
-              ]
-            },
-            {
-              "title": "Reject",
-              "description": "Reject the plan and stop the workflow",
-              "steps": [
-                {
-                  "id": "stop"
+                  "id": "execute",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
                 }
               ]
             },
@@ -253,16 +275,31 @@
                 }
               ],
               "has_user_input": true
+            },
+            {
+              "title": "Reject",
+              "description": "Reject the plan and stop the workflow",
+              "steps": [
+                {
+                  "id": "stop"
+                }
+              ]
             }
           ],
           "category": "Plan Review",
           "explanation": "Reviewing the plan"
         },
         "execute": {
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan for updating the code"
+            }
+          },
           "type": "agent",
-          "fork_from": "refine",
+          "agent": "general",
           "prompt": "$(file:prompts/plan_workflow/execute.md)",
-          "explanation": "Executing the approved plan"
+          "explanation": "Executing the approved plan",
+          "stream": true
         }
       }
     }

@@ -31,7 +31,7 @@ type systemGrepBackend struct{}
 
 func (b *systemGrepBackend) Run(pattern, path, include, cwd string) (string, error) {
 	LogInfo("[tool.grep] backend=grep cwd=%s pattern=%s path=%s include=%s", cwd, pattern, path, include)
-	args := []string{"-rn"}
+	args := []string{"-rn", "-S"} // -S: follow symlinks (BSD/macOS grep); harmless on GNU grep
 	if include != "" {
 		args = append(args, fmt.Sprintf("--include=%s", include))
 	}
@@ -60,7 +60,7 @@ type rgBackend struct{}
 
 func (b *rgBackend) Run(pattern, path, include, cwd string) (string, error) {
 	LogInfo("[tool.grep] backend=rg cwd=%s pattern=%s path=%s include=%s", cwd, pattern, path, include)
-	args := []string{"-n"}
+	args := []string{"-n", "--follow"} // --follow: follow symlinks
 	if include != "" {
 		args = append(args, fmt.Sprintf("--glob=%s", include))
 	}
@@ -126,7 +126,7 @@ func (b *fdGlobBackend) Run(pattern, path, cwd string) (string, error) {
 		searchPath = path
 	}
 
-	args := []string{"--glob", "--max-results", "200", pattern, searchPath}
+	args := []string{"--glob", "--follow", "--max-results", "200", pattern, searchPath} // --follow: follow symlinks
 
 	cmd := exec.Command("fd", args...)
 	cmd.Dir = cwd

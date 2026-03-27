@@ -35,13 +35,15 @@ type questionTab struct {
 
 // QuestionPanel is a dedicated input panel for answering questions with selectable options.
 type QuestionPanel struct {
-	visible    bool
-	tabs       []questionTab
-	currentTab int
-	textInput  textarea.Model // shared inline textarea for "Type something." option
-	width      int
-	maxVisible int // max visible options before scrolling
-	offset     int // scroll offset for current tab's options
+	visible     bool
+	tabs        []questionTab
+	currentTab  int
+	textInput   textarea.Model // shared inline textarea for "Type something." option
+	width       int
+	maxVisible  int // max visible options before scrolling
+	offset      int // scroll offset for current tab's options
+	confirmMode bool   // true when used for tool permission prompts
+	preview     string // tool preview content shown in confirm mode
 }
 
 // Open initializes the panel from a question event.
@@ -124,6 +126,78 @@ func (qp *QuestionPanel) Open(event protocol.EventUserQuestion, width int) {
 	qp.syncTextInputFocus()
 }
 
+// OpenConfirm initializes the panel for a tool permission prompt.
+// It shows a preview of what the tool will do and offers only Accept/Deny options.
+func (qp *QuestionPanel) OpenConfirm(toolName string, params map[string]any, width int) {
+	qp.visible = true
+	qp.width = width
+	qp.currentTab = 0
+	qp.offset = 0
+	qp.maxVisible = 8
+	qp.confirmMode = true
+	qp.preview = buildConfirmPreview(toolName, params)
+
+	qp.tabs = []questionTab{{
+		id:       "confirm",
+		category: "Permission",
+		question: "Allow " + toolName + "?",
+		options:  []string{"Yes, allow", "No, deny"},
+		selected: 0,
+	}}
+}
+
+// buildConfirmPreview builds a plain-text preview of the tool operation for display.
+func buildConfirmPreview(toolName string, params map[string]any) string {
+	const maxLines = 12
+	switch toolName {
+	case "write_file":
+		path, _ := params["path"].(string)
+		content, _ := params["content"].(string)
+		lines := strings.Split(content, "\n")
+		truncated := false
+		if len(lines) > maxLines {
+			lines = lines[:maxLines]
+			truncated = true
+		}
+		preview := strings.Join(lines, "\n")
+		if truncated {
+			preview += "\n…"
+		}
+		return "📄 " + path + "\n" + preview
+
+	case "edit_file":
+		path, _ := params["path"].(string)
+		old, _ := params["old_string"].(string)
+		newStr, _ := params["new_string"].(string)
+		oldLines := strings.Split(old, "\n")
+		newLines := strings.Split(newStr, "\n")
+		var sb strings.Builder
+		sb.WriteString("✏️  " + path + "\n")
+		for i, l := range oldLines {
+			if i >= maxLines/2 {
+				sb.WriteString("- …\n")
+				break
+			}
+			sb.WriteString("- " + l + "\n")
+		}
+		for i, l := range newLines {
+			if i >= maxLines/2 {
+				sb.WriteString("+ …\n")
+				break
+			}
+			sb.WriteString("+ " + l + "\n")
+		}
+		return strings.TrimRight(sb.String(), "\n")
+
+	case "delete_file":
+		path, _ := params["path"].(string)
+		return "🗑️  " + path
+
+	default:
+		return ""
+	}
+}
+
 // QAPair holds a question and its answer for rendering in chat history.
 type QAPair struct {
 	Category string
@@ -176,6 +250,8 @@ func (qp *QuestionPanel) Close() {
 	qp.visible = false
 	qp.tabs = nil
 	qp.currentTab = 0
+	qp.confirmMode = false
+	qp.preview = ""
 }
 
 // IsVisible returns whether the panel is showing.
@@ -205,6 +281,9 @@ func (qp *QuestionPanel) currentTabRef() *questionTab {
 // For rich options: checks has_user_input on the selected option.
 // For simple options: checks if cursor is on the last option ("Type something.").
 func (qp *QuestionPanel) isOnTextOption() bool {
+	if qp.confirmMode {
+		return false
+	}
 	tab := qp.currentTabRef()
 	if tab == nil {
 		return false
@@ -217,6 +296,9 @@ func (qp *QuestionPanel) isOnTextOption() bool {
 
 // syncTextInputFocus focuses or blurs the text input based on cursor position.
 func (qp *QuestionPanel) syncTextInputFocus() {
+	if qp.confirmMode {
+		return
+	}
 	if qp.isOnTextOption() {
 		qp.textInput.Focus()
 	} else {
@@ -401,6 +483,12 @@ func (qp *QuestionPanel) Height() int {
 	h++ // divider
 	h++ // help text
 
+	// Preview lines in confirm mode
+	if qp.confirmMode && qp.preview != "" {
+		h += strings.Count(qp.preview, "\n") + 1 // lines in preview
+		h++                                       // blank line after preview
+	}
+
 	return h
 }
 
@@ -453,6 +541,15 @@ func (qp *QuestionPanel) Render(s Styles, focused bool) string {
 	writeLine := func(line string) {
 		padded := lipgloss.NewStyle().Width(innerWidth).Render(line)
 		sb.WriteString(borderStyle.Render("│") + " " + padded + " " + borderStyle.Render("│") + "\n")
+	}
+
+	// Preview (confirm mode only)
+	if qp.confirmMode && qp.preview != "" {
+		previewStyle := lipgloss.NewStyle().Foreground(colorDim)
+		for _, line := range strings.Split(qp.preview, "\n") {
+			writeLine(previewStyle.Render(line))
+		}
+		writeLine("")
 	}
 
 	// Question text

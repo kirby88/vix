@@ -46,10 +46,21 @@ func classifyError(err error) (retryable bool, friendlyMsg string) {
 	}
 
 	msg := err.Error()
-	if strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "broken pipe") ||
 		strings.Contains(msg, "EOF") {
 		return true, "Connection lost"
+	}
+
+	// Streaming errors may arrive as JSON with an api_error type or
+	// "internal server error" message rather than a typed *anthropic.Error.
+	if strings.Contains(lower, "internal server error") ||
+		strings.Contains(lower, "\"type\":\"api_error\"") ||
+		strings.Contains(lower, "overloaded") ||
+		strings.Contains(lower, "bad gateway") ||
+		strings.Contains(lower, "service unavailable") {
+		return true, "API server error (stream)"
 	}
 
 	return false, "Unexpected error"

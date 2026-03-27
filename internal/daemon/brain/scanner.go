@@ -137,8 +137,21 @@ func ScanProject(root string) []FileInfo {
 			fullPath := filepath.Join(dir, name)
 			relPath, _ := filepath.Rel(root, fullPath)
 
+			// Resolve symlinks so that symlinked directories are traversed
+			// and symlinked files are treated as regular files.
+			isDir := e.IsDir()
+			isRegular := e.Type().IsRegular()
+			if e.Type()&os.ModeSymlink != 0 {
+				info, err := os.Stat(fullPath)
+				if err != nil {
+					continue // dangling symlink
+				}
+				isDir = info.IsDir()
+				isRegular = info.Mode().IsRegular()
+			}
+
 			if strings.HasPrefix(name, ".") && name != ".env.example" {
-				if e.IsDir() {
+				if isDir {
 					continue
 				}
 				ext := strings.ToLower(filepath.Ext(name))
@@ -149,7 +162,7 @@ func ScanProject(root string) []FileInfo {
 				}
 			}
 
-			if e.IsDir() {
+			if isDir {
 				if skipDirs[name] {
 					continue
 				}
@@ -160,7 +173,7 @@ func ScanProject(root string) []FileInfo {
 				continue
 			}
 
-			if !e.Type().IsRegular() {
+			if !isRegular {
 				continue
 			}
 

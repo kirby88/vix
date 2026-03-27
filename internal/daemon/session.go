@@ -24,17 +24,19 @@ import (
 
 // Session manages a single agent session over a persistent socket connection.
 type Session struct {
-	id          string
-	server      *Server
-	llm         *LLM
-	model       string
-	cwd         string
-	homeVixDir  string
-	forceInit   bool
-	eventChan   chan protocol.SessionEvent
-	commandChan chan protocol.SessionCommand
-	ctx         context.Context
-	cancel      context.CancelFunc
+	id                              string
+	server                          *Server
+	llm                             *LLM
+	model                           string
+	cwd                             string
+	homeVixDir                      string
+	forceInit                       bool
+	disableAutomaticWritePermission bool
+	headless                        bool
+	eventChan                       chan protocol.SessionEvent
+	commandChan                     chan protocol.SessionCommand
+	ctx                             context.Context
+	cancel                          context.CancelFunc
 
 	// Agent state
 	messages        []anthropic.MessageParam
@@ -63,22 +65,24 @@ type Session struct {
 }
 
 // NewSession creates a new agent session.
-func NewSession(id string, server *Server, llm *LLM, model, cwd, homeVixDir string, forceInit bool, parentCtx context.Context) *Session {
+func NewSession(id string, server *Server, llm *LLM, model, cwd, homeVixDir string, forceInit bool, disableAutomaticWritePermission bool, headless bool, parentCtx context.Context) *Session {
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &Session{
-		id:          id,
-		server:      server,
-		llm:         llm,
-		model:       model,
-		cwd:         cwd,
-		homeVixDir:  homeVixDir,
-		forceInit:   forceInit,
-		eventChan:   make(chan protocol.SessionEvent, 256),
-		commandChan: make(chan protocol.SessionCommand, 16),
-		ctx:         ctx,
-		cancel:      cancel,
-		tools:       ToolSchemas(),
-		readTracker: newReadTracker(),
+		id:                              id,
+		server:                          server,
+		llm:                             llm,
+		model:                           model,
+		cwd:                             cwd,
+		homeVixDir:                      homeVixDir,
+		forceInit:                       forceInit,
+		disableAutomaticWritePermission: disableAutomaticWritePermission,
+		headless:                        headless,
+		eventChan:                       make(chan protocol.SessionEvent, 256),
+		commandChan:                     make(chan protocol.SessionCommand, 16),
+		ctx:                             ctx,
+		cancel:                          cancel,
+		tools:                           ToolSchemas(),
+		readTracker:                     newReadTracker(),
 	}
 }
 
@@ -108,8 +112,8 @@ func (s *Session) emitHooks() *TurnHooks {
 		OnToolCall: func(toolID, name, summary, reason string) {
 			s.emit("event.tool_call", protocol.EventToolCall{ToolID: toolID, Name: name, Summary: summary, Reason: reason})
 		},
-		OnToolResult: func(toolID, name, output string, isError bool) {
-			s.emit("event.tool_result", protocol.EventToolResult{ToolID: toolID, Name: name, Output: output, IsError: isError})
+		OnToolResult: func(toolID, name string, input map[string]any, output string, isError bool) {
+			s.emitToolResult(toolID, name, input, output, isError, 0)
 		},
 	}
 }
@@ -252,6 +256,14 @@ func (s *Session) initBrain() {
 	s.chatAgent = projectConfig.Agent
 	s.workflows = projectConfig.Workflows
 
+	// Apply tool filtering from the chat agent's frontmatter (e.g. general.md).
+	// This mirrors what subagents do via FilterToolSchemas(config.Tools).
+	agentFilePath := s.resolveAgentPath(s.chatAgent + ".md")
+	if agentCfg, err := parseAgentFile(agentFilePath); err == nil && len(agentCfg.Tools) > 0 {
+		s.tools = FilterToolSchemas(agentCfg.Tools)
+		log.Printf("[session] chat agent tools from frontmatter: %v", agentCfg.Tools)
+	}
+
 	if projectConfig.HasFeature(FeatureToolOrchestrator) {
 		s.tools = FilterToolSchemas([]string{
 			"tool_orchestrator",
@@ -260,6 +272,10 @@ func (s *Session) initBrain() {
 			"task_output",
 		})
 		log.Printf("[session] tool_orchestrator feature enabled: %d tools exposed", len(s.tools))
+	}
+	if s.headless {
+		s.tools = ExcludeTools(s.tools, "ask_question_to_user")
+		log.Printf("[session] headless mode: removed ask_question_to_user from tools")
 	}
 	if len(s.workflows) > 0 {
 		log.Printf("[session] loaded %d workflow(s) from config", len(s.workflows))
@@ -456,8 +472,34 @@ func (s *Session) frequentlyAccessedFilesText() string {
 	return filesContent.String()
 }
 
+// writeClassTools is the set of tool names that mutate files and require
+// confirmation when --disable-automatic-write-permission is set.
+var writeClassTools = map[string]bool{
+	"write_file":  true,
+	"edit_file":   true,
+	"delete_file": true,
+}
+
+// isOutsideWorkdir reports whether the resolved absolute path lies outside cwd.
+func isOutsideWorkdir(cwd, resolvedPath string) bool {
+	if resolvedPath == "" {
+		return false
+	}
+	return resolvedPath != cwd &&
+		!strings.HasPrefix(resolvedPath, cwd+string(filepath.Separator))
+}
+
 // executeToolDirect calls a tool handler directly (in-process, no socket).
 func (s *Session) executeToolDirect(name string, params map[string]any) *ToolResult {
+	// If the session has automatic write permission disabled, intercept write-class
+	// tools and request user confirmation before executing them.
+	if s.disableAutomaticWritePermission && writeClassTools[name] {
+		confirmed, _ := params["confirmed"].(bool)
+		if !confirmed {
+			return &ToolResult{NeedsConfirmation: true, ToolName: name, Params: params}
+		}
+	}
+
 	// Clone params and add cwd
 	p := make(map[string]any, len(params)+1)
 	for k, v := range params {
@@ -599,22 +641,6 @@ func (s *Session) handleInput(text string, attachments []protocol.Attachment) {
 	if text == "/clear" {
 		s.messages = nil
 		s.emit("event.clear", nil)
-		s.emit("event.agent_done", nil)
-		return
-	}
-
-	if text == "/sandbox" {
-		s.server.sandboxMu.Lock()
-		s.server.sandboxEnabled = !s.server.sandboxEnabled
-		enabled := s.server.sandboxEnabled
-		s.server.sandboxMu.Unlock()
-
-		status := "disabled"
-		if enabled {
-			status = "enabled"
-		}
-		LogInfo("Sandbox toggled: %s", status)
-		s.emit("event.stream_chunk", protocol.EventStreamChunk{Text: fmt.Sprintf("Sandbox %s\n", status)})
 		s.emit("event.agent_done", nil)
 		return
 	}
@@ -1229,6 +1255,17 @@ func (s *Session) handleSpawnAgent(ctx context.Context, input map[string]any) (s
 
 	apiKey := s.llm.APIKey()
 	parentModel := s.model
+
+	// In headless mode, remove ask_question_to_user from subagent tools
+	if s.headless && config.Tools != nil {
+		var filtered []string
+		for _, t := range config.Tools {
+			if t != "ask_question_to_user" {
+				filtered = append(filtered, t)
+			}
+		}
+		config.Tools = filtered
+	}
 
 	// Create an in-process tool executor for subagents
 	executeTool := func(name string, params map[string]any, cwd string) (*ToolResult, error) {

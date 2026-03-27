@@ -11,20 +11,6 @@ Your goal is to build a thorough understanding of this codebase as grounding for
 
 $(prompt)
 
----
-
-## Project Context
-
-<file name="context/project-summary.md">
-$(file:context/project-summary.md)
-</file>
-
-<file name="context/symbol_index.md">
-$(file:context/symbol_index.md)
-</file>
-
----
-
 ## Exploration Guidelines
 
 **Minimize tool calls.** Every `read_file`, `lsp_query`, `grep`, or `glob_files` call should answer a specific, targeted question. The context above is your primary source of truth — only reach for source files when it leaves a specific question unanswered.

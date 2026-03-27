@@ -175,7 +175,7 @@ func (sc *SessionClient) SessionID() string {
 }
 
 // Connect establishes a persistent connection and starts an agent session.
-func (sc *SessionClient) Connect(cwd, model string, forceInit bool) error {
+func (sc *SessionClient) Connect(cwd, model string, forceInit bool, disableAutomaticWritePermission bool, headless bool) error {
 	conn, err := net.Dial("unix", sc.socketPath)
 	if err != nil {
 		return fmt.Errorf("daemon connect: %w", err)
@@ -186,9 +186,11 @@ func (sc *SessionClient) Connect(cwd, model string, forceInit bool) error {
 
 	// Send session.start command
 	startData, _ := json.Marshal(protocol.SessionStartData{
-		CWD:       cwd,
-		Model:     model,
-		ForceInit: forceInit,
+		CWD:                             cwd,
+		Model:                           model,
+		ForceInit:                       forceInit,
+		DisableAutomaticWritePermission: disableAutomaticWritePermission,
+		Headless:                        headless,
 	})
 	if err := sc.sendCommand(protocol.SessionCommand{
 		Type: "session.start",

@@ -1,17 +1,10 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 )
-
-// renderConfirmPrompt renders the confirmation prompt for a tool execution.
-func renderConfirmPrompt(toolName string, width int) string {
-	prompt := fmt.Sprintf("Allow %s? [Y/n] ", toolName)
-	return confirmStyle.Render(prompt)
-}
 
 // renderQuitDialog renders the quit confirmation as a centered overlay box,
 // styled like the command palette. width/height are the terminal dimensions.

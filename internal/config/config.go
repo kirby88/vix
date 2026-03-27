@@ -12,13 +12,16 @@ import (
 type Config struct {
 	Model      string
 	CWD        string
+	Workdir    string
 	ForceInit  bool
 	SocketPath string
 }
 
 // Load reads configuration from environment variables.
 // The API key is no longer needed on the client side — the daemon handles it.
-func Load(forceInit bool) (*Config, error) {
+// If workdir is non-empty, it is resolved to an absolute path and used as the
+// session working directory instead of os.Getwd().
+func Load(forceInit bool, workdir string) (*Config, error) {
 	model := os.Getenv("VIX_MODEL")
 	if model == "" {
 		model = "claude-sonnet-4-6"
@@ -29,9 +32,18 @@ func Load(forceInit bool) (*Config, error) {
 		return nil, fmt.Errorf("cannot determine working directory: %w", err)
 	}
 
+	if workdir != "" {
+		abs, err := filepath.Abs(workdir)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve workdir %q: %w", workdir, err)
+		}
+		cwd = abs
+	}
+
 	return &Config{
 		Model:      model,
 		CWD:        cwd,
+		Workdir:    workdir,
 		ForceInit:  forceInit,
 		SocketPath: "/tmp/vix_daemon.sock",
 	}, nil
@@ -48,27 +60,7 @@ func HomeVixDir() string {
 
 // DaemonConfig holds daemon-side configuration.
 type DaemonConfig struct {
-	ProjectPath string
-	HomeVixDir  string
-	Sandbox     SandboxConfig
-}
-
-// SandboxConfig holds sandbox settings.
-type SandboxConfig struct {
-	Enabled    bool
-	Filesystem FilesystemConfig
-	Network    NetworkConfig
-}
-
-// FilesystemConfig holds filesystem access rules.
-type FilesystemConfig struct {
-	AllowWrite []string
-	DenyRead   []string
-}
-
-// NetworkConfig holds network access rules (reserved for future use).
-type NetworkConfig struct {
-	AllowedDomains []string
+	HomeVixDir string
 }
 
 // ToolsConfig holds tool backend configuration.
@@ -83,16 +75,7 @@ type ToolBackendConfig struct {
 }
 
 // LoadDaemonConfig loads daemon configuration with defaults.
-// If projectPath is non-empty, it is used instead of os.Getwd().
-func LoadDaemonConfig(projectPath string) (*DaemonConfig, error) {
-	if projectPath == "" {
-		var err error
-		projectPath, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine working directory: %w", err)
-		}
-	}
-
+func LoadDaemonConfig() (*DaemonConfig, error) {
 	homeDir := HomeVixDir()
 	if homeDir != "" {
 		os.MkdirAll(homeDir, 0o755)
@@ -102,25 +85,14 @@ func LoadDaemonConfig(projectPath string) (*DaemonConfig, error) {
 	}
 
 	return &DaemonConfig{
-		ProjectPath: projectPath,
-		HomeVixDir:  homeDir,
-		Sandbox: SandboxConfig{
-			Enabled: false,
-			Filesystem: FilesystemConfig{
-				AllowWrite: []string{".", "/tmp"},
-				DenyRead:   []string{},
-			},
-			Network: NetworkConfig{
-				AllowedDomains: []string{},
-			},
-		},
+		HomeVixDir: homeDir,
 	}, nil
 }
 
 // ThemeConfig holds user-configurable brand colors.
 type ThemeConfig struct {
-	Primary   string `json:"primary"`   // hex color like "#E07060"
-	Secondary string `json:"secondary"` // hex color like "#50B0E0"
+	Primary   string `json:"primary"`   // hex color like "#BC63FC"
+	Secondary string `json:"secondary"` // hex color like "#A3FC63"
 }
 
 // LoadThemeConfig reads theme colors from settings.json files.

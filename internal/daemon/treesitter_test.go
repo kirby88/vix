@@ -163,6 +163,87 @@ class Greeter {
 	}
 }
 
+func TestCompressWithTreeSitterSwift(t *testing.T) {
+	src := `// A greeting function
+/* block comment */
+func greet(name: String) -> String {
+    let message = "Hello, " + name
+    return message
+}
+
+class Greeter {
+    var name: String
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func greet() -> String {
+        return "Hello, \(name)!"
+    }
+}
+`
+	out, err := compressWithTreeSitter(src, "Greeter.swift")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty compressed output for Swift")
+	}
+	if len(out) >= len(src) {
+		t.Errorf("compressed output (%d) should be shorter than input (%d)", len(out), len(src))
+	}
+	// Comments should be stripped
+	for _, commentText := range []string{"A greeting function", "block comment"} {
+		if strings.Contains(out, commentText) {
+			t.Errorf("comment text %q should be stripped from compressed output", commentText)
+		}
+	}
+	for _, tok := range []string{"func", "greet", "class", "Greeter", "return"} {
+		if !strings.Contains(out, tok) {
+			t.Errorf("expected token %q in compressed output", tok)
+		}
+	}
+}
+
+func TestCompressWithTreeSitterKotlin(t *testing.T) {
+	src := `// A greeting function
+/* block comment */
+fun greet(name: String): String {
+    val message = "Hello, " + name
+    return message
+}
+
+class Greeter(val name: String) {
+    // greet method
+    fun greet(): String {
+        return "Hello, $name!"
+    }
+}
+`
+	out, err := compressWithTreeSitter(src, "Greeter.kt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty compressed output for Kotlin")
+	}
+	if len(out) >= len(src) {
+		t.Errorf("compressed output (%d) should be shorter than input (%d)", len(out), len(src))
+	}
+	// Comments should be stripped
+	for _, commentText := range []string{"A greeting function", "block comment", "greet method"} {
+		if strings.Contains(out, commentText) {
+			t.Errorf("comment text %q should be stripped from compressed output", commentText)
+		}
+	}
+	for _, tok := range []string{"fun", "greet", "class", "Greeter", "return"} {
+		if !strings.Contains(out, tok) {
+			t.Errorf("expected token %q in compressed output", tok)
+		}
+	}
+}
+
 func TestCompressWithTreeSitterUnsupported(t *testing.T) {
 	src := "Hello world, this is plain text."
 	out, err := compressWithTreeSitter(src, "readme.txt")

@@ -55,7 +55,7 @@ type reconnectSuccessMsg struct {
 type reconnectFailedMsg struct{}
 
 // attemptReconnect tries to reconnect to the daemon.
-func attemptReconnect(socketPath, cwd, model string, forceInit bool) tea.Cmd {
+func attemptReconnect(socketPath, cwd, model string, forceInit bool, disableAutomaticWritePermission bool) tea.Cmd {
 	return func() tea.Msg {
 		// First check if daemon is responding
 		client := daemon.NewClient(socketPath)
@@ -67,7 +67,7 @@ func attemptReconnect(socketPath, cwd, model string, forceInit bool) tea.Cmd {
 
 		// Daemon is up, try to establish session
 		session := daemon.NewSessionClient(socketPath)
-		if err := session.Connect(cwd, model, forceInit); err != nil {
+		if err := session.Connect(cwd, model, forceInit, disableAutomaticWritePermission, false); err != nil {
 			time.Sleep(2 * time.Second)
 			return reconnectFailedMsg{}
 		}
@@ -175,31 +175,32 @@ type Model struct {
 	testMode bool
 
 	// Connection parameters for reconnection
-	socketPath string
-	cwd        string
-
+	socketPath                      string
+	cwd                             string
+	disableAutomaticWritePermission bool
 }
 
 // NewModel creates a new root Model.
-func NewModel(cfg *config.Config, session *daemon.SessionClient, testMode bool) Model {
+func NewModel(cfg *config.Config, session *daemon.SessionClient, testMode bool, disableAutomaticWritePermission bool) Model {
 	m := Model{
-		state:          StateWaitingForInput,
-		input:          newInput(),
-		thinkingAnim:   NewThinkingAnim(),
-		commandPalette: NewCommandPalette(),
-		focus:          FocusEditor,
-		testMode:       testMode,
-		session:        session,
-		connected:      session != nil,
-		modelName:      cfg.Model,
-		hasDarkBG:      true,
-		styles:         NewStyles(true),
-		history:        NewHistory(),
-		mdRenderer:     NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
-		cfg:            cfg,
-		socketPath:     cfg.SocketPath,
-		cwd:            cfg.CWD,
-		sidebarHidden:  true,
+		state:                           StateWaitingForInput,
+		input:                           newInput(),
+		thinkingAnim:                    NewThinkingAnim(),
+		commandPalette:                  NewCommandPalette(),
+		focus:                           FocusEditor,
+		testMode:                        testMode,
+		session:                         session,
+		connected:                       session != nil,
+		modelName:                       cfg.Model,
+		hasDarkBG:                       true,
+		styles:                          NewStyles(true),
+		history:                         NewHistory(),
+		mdRenderer:                      NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
+		cfg:                             cfg,
+		socketPath:                      cfg.SocketPath,
+		cwd:                             cfg.CWD,
+		sidebarHidden:                   true,
+		disableAutomaticWritePermission: disableAutomaticWritePermission,
 	}
 
 	if testMode {
@@ -455,10 +456,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Question panel intercepts keys only when it has focus (editor focus)
-		if m.state == StateUserQuestion && m.questionPanel.IsVisible() && m.focus == FocusEditor {
+		if (m.state == StateUserQuestion || m.state == StateConfirmPending) && m.questionPanel.IsVisible() && m.focus == FocusEditor {
 			result, answer, batchAnswers := m.questionPanel.HandleKey(msg)
 			switch result {
 			case QPSubmitted:
+				if m.state == StateConfirmPending {
+					approved := answer == "Yes, allow"
+					pairs := []QAPair{{Category: "Permission", Question: "Allow " + m.confirmToolName + "?", Answer: answer}}
+					m.chatMessages = append(m.chatMessages, renderQuestionAnswer(pairs, m.styles))
+					if m.session != nil {
+						m.session.SendConfirm(approved)
+					}
+					m.questionPanel.Close()
+					m.state = StateToolExecuting
+					return m, nil
+				}
 				if batchAnswers != nil {
 					pairs := m.questionPanel.GetAnsweredPairs()
 					m.chatMessages = append(m.chatMessages, renderQuestionAnswer(pairs, m.styles))
@@ -483,6 +495,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		
 				return m, nil
 			case QPCancelled:
+				if m.state == StateConfirmPending {
+					pairs := []QAPair{{Category: "Permission", Question: "Allow " + m.confirmToolName + "?", Answer: "No, deny"}}
+					m.chatMessages = append(m.chatMessages, renderQuestionAnswer(pairs, m.styles))
+					if m.session != nil {
+						m.session.SendConfirm(false)
+					}
+					m.questionPanel.Close()
+					m.state = StateToolExecuting
+					return m, nil
+				}
 				if m.session != nil {
 					m.session.SendUserAnswer("", "")
 				}
@@ -573,8 +595,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.state = StateStreaming
 				}
-		
-				return m, nil
+				animCmd := m.thinkingAnim.Start()
+				return m, animCmd
 			}
 
 			if m.state == StateWaitingForInput {
@@ -625,20 +647,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Quit
 			}
-			if m.state == StateConfirmPending {
-				if m.session != nil {
-					m.session.SendConfirm(true)
-				}
-				m.state = StateToolExecuting
-				return m, nil
-			}
 			if m.state == StatePlanReview && m.input.Value() == "" {
 				if m.session != nil {
 					m.session.SendPlanAction("approve", "")
 				}
 				m.state = StateStreaming
-		
-				return m, nil
+				animCmd := m.thinkingAnim.Start()
+				return m, animCmd
 			}
 
 		case "esc":
@@ -660,13 +675,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		
 				return m, nil
 			}
-			if m.state == StateConfirmPending {
-				if m.session != nil {
-					m.session.SendConfirm(false)
-				}
-				m.state = StateToolExecuting
-				return m, nil
-			}
 			if m.state == StatePlanReview && m.input.Value() == "" {
 				if m.session != nil {
 					m.session.SendPlanAction("reject", "")
@@ -682,13 +690,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = m.quitPrevState
 				return m, nil
 			}
-			if m.state == StateConfirmPending {
-				if m.session != nil {
-					m.session.SendConfirm(false)
-				}
-				m.state = StateToolExecuting
-				return m, nil
-			}
 			if m.state == StatePlanReview && m.input.Value() == "" {
 				if m.session != nil {
 					m.session.SendPlanAction("reject", "")
@@ -699,10 +700,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		}
-
-		if m.state == StateConfirmPending {
-			return m, nil
 		}
 
 		if m.state == StateQuitConfirm {
@@ -765,7 +762,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatMessages = append(m.chatMessages, renderErrorMessage(fmt.Errorf("daemon connection lost")))
 		m.state = StateWaitingForInput
 
-		return m, attemptReconnect(m.socketPath, m.cwd, m.cfg.Model, m.cfg.ForceInit)
+		return m, attemptReconnect(m.socketPath, m.cwd, m.cfg.Model, m.cfg.ForceInit, m.disableAutomaticWritePermission)
 
 	case reconnectSuccessMsg:
 		m.session = msg.session
@@ -777,7 +774,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reconnectFailedMsg:
 		if m.reconnecting {
-			return m, attemptReconnect(m.socketPath, m.cwd, m.cfg.Model, m.cfg.ForceInit)
+			return m, attemptReconnect(m.socketPath, m.cwd, m.cfg.Model, m.cfg.ForceInit, m.disableAutomaticWritePermission)
 		}
 		return m, nil
 
@@ -956,6 +953,9 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		var cr protocol.EventConfirmRequest
 		json.Unmarshal(data, &cr)
 		m.confirmToolName = cr.ToolName
+		m.thinkingAnim.Stop()
+		m.questionPanel.OpenConfirm(cr.ToolName, cr.Params, m.width)
+		m.focus = FocusEditor
 
 	case "event.user_question":
 		data := marshalData(event.Data)
@@ -984,9 +984,11 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		var pts protocol.EventPlanTaskStart
 		json.Unmarshal(data, &pts)
 		m.chatMessages = append(m.chatMessages, renderPlanTaskStart(pts.TaskIdx, pts.Title, pts.Total))
+		cmds = append(cmds, m.thinkingAnim.Start())
 		// Stays live until plan_complete
 
 	case "event.plan_task_done":
+		m.thinkingAnim.Stop()
 		data := marshalData(event.Data)
 		var ptd protocol.EventPlanTaskDone
 		json.Unmarshal(data, &ptd)
@@ -1014,9 +1016,11 @@ func (m Model) handleDaemonEvent(event protocol.SessionEvent) (tea.Model, tea.Cm
 		var pss protocol.EventWorkflowStepStart
 		json.Unmarshal(data, &pss)
 		m.chatMessages = append(m.chatMessages, renderWorkflowStepStart(pss.StepID, pss.StepIdx, pss.Total, pss.Explanation))
+		cmds = append(cmds, m.thinkingAnim.Start())
 		// Stays live until step_done
 
 	case "event.workflow_step_done":
+		m.thinkingAnim.Stop()
 		// Flush streaming buffer so content is rendered with markdown and committed
 		if m.assistantBuf != "" {
 			m.chatMessages = append(m.chatMessages, renderAssistantMessage(m.assistantBuf, m.mdRenderer))
@@ -1180,7 +1184,7 @@ func (m Model) View() tea.View {
 		panelHeights = append(panelHeights, m.historyPanel.maxHeight+2)
 	}
 	inputLines := m.visualLineCount()
-	if m.state == StateUserQuestion && m.questionPanel.IsVisible() {
+	if (m.state == StateUserQuestion || m.state == StateConfirmPending) && m.questionPanel.IsVisible() {
 		inputLines = m.questionPanel.Height()
 	}
 	layout := m.computeLayoutWithSidebar(inputLines, panelHeights...)
@@ -1265,14 +1269,11 @@ func (m Model) View() tea.View {
 
 	// 3. Input section
 	var inputSection string
-	if m.state == StateUserQuestion && m.questionPanel.IsVisible() {
+	if (m.state == StateUserQuestion || m.state == StateConfirmPending) && m.questionPanel.IsVisible() {
 		inputSection = m.questionPanel.Render(m.styles, m.focus == FocusEditor)
 	} else if m.state == StateQuitConfirm {
 		// Render the underlying input box dimmed; the quit dialog is an overlay drawn later.
 		inputSection = renderInputBox(m.currentModeName(), m.activeWorkflow != "", m.input.View(), m.width, false, m.styles.ColorBlurBorder)
-	} else if m.state == StateConfirmPending {
-		inputArea := renderConfirmPrompt(m.confirmToolName, m.width)
-		inputSection = renderInputBox(m.currentModeName(), m.activeWorkflow != "", inputArea, m.width, m.focus == FocusEditor, m.styles.ColorBlurBorder)
 	} else {
 		inputSection = renderInputBox(m.currentModeName(), m.activeWorkflow != "", m.input.View(), m.width, m.focus == FocusEditor, m.styles.ColorBlurBorder)
 	}
