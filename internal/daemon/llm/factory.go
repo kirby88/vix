@@ -115,6 +115,7 @@ func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens in
 	}
 
 	inf := p.Inference.Resolve()
+	pluginCfg.SessionHeader = inf.SessionHeader
 	cfg := Config{
 		Credential: cred,
 		Model:      model,
