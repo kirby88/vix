@@ -1766,6 +1766,7 @@ func (s *Thread) streamWithRetry(
 	// which (a) cancels the in-flight StreamMessage via the derived streamCtx
 	// and (b) wakes the backoff select so we don't keep retrying after Escape.
 	retryCtx, retryCancel := context.WithCancel(s.ctx)
+	retryCtx = llm.WithSessionID(retryCtx, s.id)
 	s.cancelStream = retryCancel
 	defer retryCancel()
 
@@ -2914,6 +2915,7 @@ func (s *Thread) handleWorkflowCommand(name, text string, inline json.RawMessage
 	}
 
 	planCtx, planCancel := context.WithCancel(s.ctx)
+	planCtx = llm.WithSessionID(planCtx, s.id)
 	s.planCancel = planCancel
 	defer func() {
 		planCancel()
